@@ -98,33 +98,60 @@ jobs:
       - name: Silent pytest execution and collection check
         id: check-collection
         run: |
-          # Use Python for completely silent execution
+          # Use Python with OS-level file descriptor redirection for complete silence
           python3 << 'EOF'
           import subprocess
           import sys
           import os
+          import contextlib
 
-          def run_completely_silent(cmd, timeout=1800):
-              """Run command with complete output suppression"""
+          def run_with_complete_silence(cmd, timeout=1800):
+              """Run command with OS-level output suppression"""
               try:
-                  # Suppress all output streams
-                  result = subprocess.run(
-                      cmd,
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL,
-                      stdin=subprocess.DEVNULL,
-                      timeout=timeout,
-                      env={**os.environ, 
-                           'PYTHONUNBUFFERED': '0',
-                           'PYTHONWARNINGS': 'ignore',
-                           'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
-                           'PYTEST_CURRENT_TEST': '',
-                           'COLUMNS': '80'}
-                  )
+                  # Save original file descriptors
+                  original_stdout = os.dup(1)
+                  original_stderr = os.dup(2)
+                  original_stdin = os.dup(0)
+                  
+                  try:
+                      # Redirect to /dev/null at OS level
+                      devnull = os.open(os.devnull, os.O_WRONLY)
+                      devnull_read = os.open(os.devnull, os.O_RDONLY)
+                      
+                      os.dup2(devnull, 1)  # stdout
+                      os.dup2(devnull, 2)  # stderr  
+                      os.dup2(devnull_read, 0)  # stdin
+                      
+                      # Run the command
+                      result = subprocess.run(
+                          cmd,
+                          timeout=timeout,
+                          env={**os.environ, 
+                               'PYTHONUNBUFFERED': '0',
+                               'PYTHONWARNINGS': 'ignore',
+                               'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
+                               'PYTEST_CURRENT_TEST': '',
+                               'COLUMNS': '80',
+                               'PYTHONDONTWRITEBYTECODE': '1'}
+                      )
+                      
+                      os.close(devnull)
+                      os.close(devnull_read)
+                      
+                  finally:
+                      # Restore original file descriptors
+                      os.dup2(original_stdout, 1)
+                      os.dup2(original_stderr, 2)
+                      os.dup2(original_stdin, 0)
+                      os.close(original_stdout)
+                      os.close(original_stderr)
+                      os.close(original_stdin)
+                  
                   return result
+                  
               except subprocess.TimeoutExpired:
                   return subprocess.CompletedProcess(cmd, 1)
-              except Exception:
+              except Exception as e:
                   return subprocess.CompletedProcess(cmd, 1)
 
           def run_with_captured_output(cmd, timeout=60):
@@ -140,7 +167,7 @@ jobs:
               except Exception:
                   return subprocess.CompletedProcess(cmd, 1, stderr="Execution failed")
 
-          # Step 1: Collection check
+          # Step 1: Collection check (need output for this)
           collection_cmd = [sys.executable, '-m', 'pytest', '--collect-only', '--quiet', '--tb=no']
           collection_result = run_with_captured_output(collection_cmd)
 
@@ -175,7 +202,7 @@ jobs:
               f.write(f'error_details={error_details}\n')
               f.write(f'has_errors={str(has_collection_errors == "true" or no_tests_found == "true").lower()}\n')
 
-          # Step 2: Run tests if collection succeeded
+          # Step 2: Run tests if collection succeeded - COMPLETELY SILENT
           if has_collection_errors == "false":
               test_cmd = [
                   sys.executable, '-m', 'pytest',
@@ -189,12 +216,11 @@ jobs:
                   '--log-level=CRITICAL',
                   '--log-cli-level=CRITICAL',
                   '--capture=sys',
-                  '--maxfail=999999',
-                  '-v', '--tb=no'  # -v for verbose JSON but --tb=no for no traceback output
+                  '--maxfail=999999'
               ]
               
-              # Run completely silently
-              test_result = run_completely_silent(test_cmd)
+              # Run with complete OS-level silence
+              test_result = run_with_complete_silence(test_cmd)
               
               if os.path.exists('pr_results.json'):
                   print("Test results generated successfully")
@@ -386,36 +412,62 @@ jobs:
       - name: Run tests on target branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          # Use Python for completely silent pytest execution
+          # Use Python with OS-level file descriptor redirection for complete silence
           python3 << 'EOF'
           import subprocess
           import sys
           import os
 
-          def run_completely_silent(cmd, timeout=1800):
-              """Run command with complete output suppression"""
+          def run_with_complete_silence(cmd, timeout=1800):
+              """Run command with OS-level output suppression"""
               try:
-                  # Suppress all output streams and set environment for silent execution
-                  result = subprocess.run(
-                      cmd,
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL,
-                      stdin=subprocess.DEVNULL,
-                      timeout=timeout,
-                      env={**os.environ, 
-                           'PYTHONUNBUFFERED': '0',
-                           'PYTHONWARNINGS': 'ignore',
-                           'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
-                           'PYTEST_CURRENT_TEST': '',
-                           'COLUMNS': '80'}
-                  )
+                  # Save original file descriptors
+                  original_stdout = os.dup(1)
+                  original_stderr = os.dup(2)
+                  original_stdin = os.dup(0)
+                  
+                  try:
+                      # Redirect to /dev/null at OS level
+                      devnull = os.open(os.devnull, os.O_WRONLY)
+                      devnull_read = os.open(os.devnull, os.O_RDONLY)
+                      
+                      os.dup2(devnull, 1)  # stdout
+                      os.dup2(devnull, 2)  # stderr  
+                      os.dup2(devnull_read, 0)  # stdin
+                      
+                      # Run the command
+                      result = subprocess.run(
+                          cmd,
+                          timeout=timeout,
+                          env={**os.environ, 
+                               'PYTHONUNBUFFERED': '0',
+                               'PYTHONWARNINGS': 'ignore',
+                               'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
+                               'PYTEST_CURRENT_TEST': '',
+                               'COLUMNS': '80',
+                               'PYTHONDONTWRITEBYTECODE': '1'}
+                      )
+                      
+                      os.close(devnull)
+                      os.close(devnull_read)
+                      
+                  finally:
+                      # Restore original file descriptors
+                      os.dup2(original_stdout, 1)
+                      os.dup2(original_stderr, 2)
+                      os.dup2(original_stdin, 0)
+                      os.close(original_stdout)
+                      os.close(original_stderr)
+                      os.close(original_stdin)
+                  
                   return result
+                  
               except subprocess.TimeoutExpired:
                   return subprocess.CompletedProcess(cmd, 1)
-              except Exception:
+              except Exception as e:
                   return subprocess.CompletedProcess(cmd, 1)
 
-          # Run pytest completely silently
+          # Run pytest with complete OS-level silence
           test_cmd = [
               sys.executable, '-m', 'pytest',
               '--json-report',
@@ -428,11 +480,11 @@ jobs:
               '--log-level=CRITICAL',
               '--log-cli-level=CRITICAL',
               '--capture=sys',
-              '--maxfail=999999',
-              '-v', '--tb=no'  # -v for verbose JSON but --tb=no for no traceback output
+              '--maxfail=999999'
           ]
 
-          test_result = run_completely_silent(test_cmd)
+          # Run with complete OS-level silence
+          test_result = run_with_complete_silence(test_cmd)
 
           # Check results
           if os.path.exists('target_results.json'):
