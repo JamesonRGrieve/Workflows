@@ -104,25 +104,51 @@ jobs:
           import sys
           import os
 
-          def run_silent_command(cmd, capture_output=False):
+          def run_completely_silent(cmd, timeout=1800):
+              """Run command with complete output suppression"""
               try:
-                  if capture_output:
-                      return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                  else:
-                      with open(os.devnull, 'w') as devnull:
-                          return subprocess.run(cmd, stdout=devnull, stderr=devnull, timeout=1800)
-              except:
+                  # Suppress all output streams
+                  result = subprocess.run(
+                      cmd,
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL,
+                      stdin=subprocess.DEVNULL,
+                      timeout=timeout,
+                      env={**os.environ, 
+                           'PYTHONUNBUFFERED': '0',
+                           'PYTHONWARNINGS': 'ignore',
+                           'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1',
+                           'PYTEST_CURRENT_TEST': '',
+                           'COLUMNS': '80'}
+                  )
+                  return result
+              except subprocess.TimeoutExpired:
                   return subprocess.CompletedProcess(cmd, 1)
+              except Exception:
+                  return subprocess.CompletedProcess(cmd, 1)
+
+          def run_with_captured_output(cmd, timeout=60):
+              """Run command and capture output for error checking"""
+              try:
+                  return subprocess.run(
+                      cmd, 
+                      capture_output=True, 
+                      text=True, 
+                      timeout=timeout,
+                      env={**os.environ, 'PYTHONWARNINGS': 'ignore'}
+                  )
+              except Exception:
+                  return subprocess.CompletedProcess(cmd, 1, stderr="Execution failed")
 
           # Step 1: Collection check
           collection_cmd = [sys.executable, '-m', 'pytest', '--collect-only', '--quiet', '--tb=no']
-          collection_result = run_silent_command(collection_cmd, capture_output=True)
-          
+          collection_result = run_with_captured_output(collection_cmd)
+
           has_collection_errors = "false"
           no_tests_found = "false"
           error_type = "none"
           error_details = "none"
-          
+
           if collection_result.returncode != 0:
               if any(err in collection_result.stderr for err in ['ImportError', 'ModuleNotFoundError', 'SyntaxError', 'ERROR collecting']):
                   has_collection_errors = "true"
@@ -161,11 +187,14 @@ jobs:
                   '--quiet',
                   '--disable-warnings',
                   '--log-level=CRITICAL',
+                  '--log-cli-level=CRITICAL',
                   '--capture=sys',
-                  '--maxfail=999999'
+                  '--maxfail=999999',
+                  '-v', '--tb=no'  # -v for verbose JSON but --tb=no for no traceback output
               ]
               
-              test_result = run_silent_command(test_cmd)
+              # Run completely silently
+              test_result = run_completely_silent(test_cmd)
               
               if os.path.exists('pr_results.json'):
                   print("Test results generated successfully")
@@ -347,7 +376,7 @@ jobs:
           echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
           echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
           echo "error_details=$ERROR_DETAILS" >> $GITHUB_OUTPUT
-          
+
           if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
             echo "has_errors=true" >> $GITHUB_OUTPUT
           else
@@ -385,10 +414,10 @@ jobs:
               --maxfail=999999 \
               --tb=no
           ) &
-          
+
           # Wait for background process to complete
           wait
-          
+
           # Check results outside the silent execution
           if [ -f target_results.json ]; then
             echo "Test results generated successfully"
