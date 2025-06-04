@@ -96,82 +96,85 @@ jobs:
             pip install -r requirements.txt --quiet
           fi
 
-      - name: Check for test collection errors
+      - name: Silent pytest execution and collection check
         id: check-collection
         run: |
-          HAS_COLLECTION_ERRORS="false"
-          NO_TESTS_FOUND="false"
-          ERROR_TYPE="none"
-          ERROR_DETAILS="none"
+          # Use Python for completely silent execution
+          python3 << 'EOF'
+          import subprocess
+          import sys
+          import os
 
-          python -m pytest --collect-only --quiet --tb=no >/dev/null 2>collection_check.txt
-          COLLECTION_EXIT_CODE=$?
+          def run_silent_command(cmd, capture_output=False):
+              try:
+                  if capture_output:
+                      return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                  else:
+                      with open(os.devnull, 'w') as devnull:
+                          return subprocess.run(cmd, stdout=devnull, stderr=devnull, timeout=1800)
+              except:
+                  return subprocess.CompletedProcess(cmd, 1)
 
-          if [ $COLLECTION_EXIT_CODE -ne 0 ]; then
-            if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting" collection_check.txt; then
-              echo "::error::Test discovery errors detected in PR branch"
-              HAS_COLLECTION_ERRORS="true"
-              
-              if grep -q "ImportError" collection_check.txt; then
-                ERROR_TYPE="ImportError"
-              elif grep -q "ModuleNotFoundError" collection_check.txt; then
-                ERROR_TYPE="ModuleNotFoundError"
-              elif grep -q "SyntaxError" collection_check.txt; then
-                ERROR_TYPE="SyntaxError"
-              else
-                ERROR_TYPE="CollectionError"
-              fi
-              
-              ERROR_DETAILS=$(head -1 collection_check.txt | tr '\n' ' ' | cut -c1-200)
-            fi
-          else
-            TEST_COUNT=$(python -m pytest --collect-only --quiet 2>/dev/null | grep -o "collected [0-9]* item" | grep -o "[0-9]*" || echo "0")
-            if [[ "$TEST_COUNT" == "0" ]]; then
-              echo "::warning::No tests were found in the PR branch"
-              NO_TESTS_FOUND="true"
-              ERROR_TYPE="NoTestsFound"
-              ERROR_DETAILS="No test files discovered"
-            fi
-          fi
-
-          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
-          echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
-          echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
-          echo "error_details=$ERROR_DETAILS" >> $GITHUB_OUTPUT
+          # Step 1: Collection check
+          collection_cmd = [sys.executable, '-m', 'pytest', '--collect-only', '--quiet', '--tb=no']
+          collection_result = run_silent_command(collection_cmd, capture_output=True)
           
-          if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
-            echo "has_errors=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_errors=false" >> $GITHUB_OUTPUT
-          fi
+          has_collection_errors = "false"
+          no_tests_found = "false"
+          error_type = "none"
+          error_details = "none"
+          
+          if collection_result.returncode != 0:
+              if any(err in collection_result.stderr for err in ['ImportError', 'ModuleNotFoundError', 'SyntaxError', 'ERROR collecting']):
+                  has_collection_errors = "true"
+                  if 'ImportError' in collection_result.stderr:
+                      error_type = "ImportError"
+                  elif 'ModuleNotFoundError' in collection_result.stderr:
+                      error_type = "ModuleNotFoundError"
+                  elif 'SyntaxError' in collection_result.stderr:
+                      error_type = "SyntaxError"
+                  else:
+                      error_type = "CollectionError"
+                  error_details = collection_result.stderr[:200] if collection_result.stderr else "Collection failed"
+          else:
+              if 'collected 0 items' in collection_result.stdout or not collection_result.stdout.strip():
+                  no_tests_found = "true"
+                  error_type = "NoTestsFound"
+                  error_details = "No test files discovered"
 
-      - name: Run tests on PR Branch
-        if: steps.check-collection.outputs.has_collection_errors != 'true'
-        env:
-          PYTHONUNBUFFERED: "0"
-          PYTHONWARNINGS: "ignore"
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
-          PYTEST_CURRENT_TEST: ""
-          COLUMNS: "80"
-        run: |
-          python -m pytest \
-            --json-report \
-            --json-report-file=pr_results.json \
-            --tb=no \
-            --no-header \
-            --no-summary \
-            -q \
-            --disable-warnings \
-            --log-level=CRITICAL \
-            --log-cli-level=CRITICAL \
-            --capture=sys \
-            >/dev/null 2>&1 || true
+          # Write outputs
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'has_collection_errors={has_collection_errors}\n')
+              f.write(f'no_tests_found={no_tests_found}\n')
+              f.write(f'error_type={error_type}\n')
+              f.write(f'error_details={error_details}\n')
+              f.write(f'has_errors={str(has_collection_errors == "true" or no_tests_found == "true").lower()}\n')
 
-          if [ -f pr_results.json ]; then
-            echo "Test results generated successfully"
-          else
-            echo "::error::Failed to create test results file"
-          fi
+          # Step 2: Run tests if collection succeeded
+          if has_collection_errors == "false":
+              test_cmd = [
+                  sys.executable, '-m', 'pytest',
+                  '--json-report',
+                  '--json-report-file=pr_results.json',
+                  '--tb=no',
+                  '--no-header',
+                  '--no-summary',
+                  '--quiet',
+                  '--disable-warnings',
+                  '--log-level=CRITICAL',
+                  '--capture=sys',
+                  '--maxfail=999999'
+              ]
+              
+              test_result = run_silent_command(test_cmd)
+              
+              if os.path.exists('pr_results.json'):
+                  print("Test results generated successfully")
+              else:
+                  print("::error::Failed to create test results file")
+          else:
+              print(f"::error::Skipping tests due to collection errors: {error_type}")
+          EOF
 
       - name: Extract test results and create artifacts
         id: extract-results
@@ -362,19 +365,33 @@ jobs:
           PYTEST_CURRENT_TEST: ""
           COLUMNS: "80"
         run: |
-          python -m pytest \
-            --json-report \
-            --json-report-file=target_results.json \
-            --tb=no \
-            --no-header \
-            --no-summary \
-            -q \
-            --disable-warnings \
-            --log-level=CRITICAL \
-            --log-cli-level=CRITICAL \
-            --capture=sys \
-            >/dev/null 2>&1 || true
-
+          # Create completely isolated execution to prevent any output leakage
+          (
+            # Close all file descriptors and redirect to /dev/null
+            exec 0</dev/null
+            exec 1>/dev/null
+            exec 2>/dev/null
+            
+            # Run pytest in completely silent mode
+            python -m pytest \
+              --json-report \
+              --json-report-file=target_results.json \
+              --tb=no \
+              --no-header \
+              --no-summary \
+              --quiet \
+              --disable-warnings \
+              --log-level=CRITICAL \
+              --log-cli-level=CRITICAL \
+              --capture=sys \
+              --maxfail=999999 \
+              --tb=no
+          ) &
+          
+          # Wait for background process to complete
+          wait
+          
+          # Check results outside the silent execution
           if [ -f target_results.json ]; then
             echo "Test results generated successfully"
           else
