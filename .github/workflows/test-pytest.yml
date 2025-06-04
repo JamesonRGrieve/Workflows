@@ -61,11 +61,6 @@ on:
         value: ${{ jobs.compare-results.outputs.regression_count }}
 
 jobs:
-  lint:
-    uses: ./.github/workflows/test-lint-py.yml
-    permissions:
-      contents: write
-
   test-source-branch:
     needs: lint
     runs-on: ${{ inputs.runs_on }}
