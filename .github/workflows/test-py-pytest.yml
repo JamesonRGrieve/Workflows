@@ -995,26 +995,74 @@ jobs:
             fi
           fi
 
-          # Check for regressions and display comprehensive summary
-          if [[ "${{ needs.perform-regression-analysis.outputs.has_regressions }}" == "true" ]]; then
+          # Check for regressions from meta-regression-analysis OR our comprehensive analysis
+          COMPREHENSIVE_REGRESSIONS="false"
+          if [ -f comprehensive_regression_report.txt ]; then
+            # Check if there are any actual regressions in our comprehensive report
+            if grep -q "REGRESSIONS.*([1-9]" comprehensive_regression_report.txt; then
+              COMPREHENSIVE_REGRESSIONS="true"
+            fi
+          fi
+
+          if [[ "${{ needs.perform-regression-analysis.outputs.has_regressions }}" == "true" ]] || [[ "$COMPREHENSIVE_REGRESSIONS" == "true" ]]; then
             echo "❌ Test regressions detected from target branch"
             REGRESSION_COUNT_VAL=${{ needs.perform-regression-analysis.outputs.regression_count }}
 
             echo "### :x: Test Regressions Detected!" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**$REGRESSION_COUNT_VAL test regression(s) detected.** See detailed breakdown below:" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Extract counts from comprehensive report if available
+            if [ -f comprehensive_regression_report.txt ]; then
+              PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_SKIP_COUNT=$(grep -o "FAIL-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              
+              TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + FAIL_SKIP_COUNT + DISCOVERY_COUNT))
+              
+              echo "**$TOTAL_REGRESSIONS total regression(s) detected across multiple categories:**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "| Category | Count |" >> $GITHUB_STEP_SUMMARY
+              echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+              echo "| Pass → Fail | $PASS_FAIL_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Pass → Skip/XFail | $PASS_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Fail → Skip | $FAIL_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Discovery Warnings | $DISCOVERY_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "**$REGRESSION_COUNT_VAL test regression(s) detected.** See detailed breakdown below:" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
 
             # Display comprehensive regression report if available
             if [ -f comprehensive_regression_report.txt ]; then
                 echo "📋 **Comprehensive Regression Analysis:**" >> $GITHUB_STEP_SUMMARY
-                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-                cat comprehensive_regression_report.txt >> $GITHUB_STEP_SUMMARY
-                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Parse and format the comprehensive report for better GitHub display
+                while IFS= read -r line; do
+                    if [[ "$line" =~ ^[A-Z-].*REGRESSIONS.*\([0-9]+ ]]; then
+                        echo "### $line" >> $GITHUB_STEP_SUMMARY
+                    elif [[ "$line" =~ ^Previously ]]; then
+                        echo "*$line*" >> $GITHUB_STEP_SUMMARY
+                        echo "" >> $GITHUB_STEP_SUMMARY
+                    elif [[ "$line" =~ ^[[:space:]]*[0-9]+\. ]]; then
+                        echo "- ${line#*. }" >> $GITHUB_STEP_SUMMARY
+                    elif [[ ! "$line" =~ ^=.*=$ ]] && [[ -n "$line" ]]; then
+                        echo "$line" >> $GITHUB_STEP_SUMMARY
+                    fi
+                done < comprehensive_regression_report.txt
+                
                 echo "" >> $GITHUB_STEP_SUMMARY
                 echo "Detailed regression analysis:"
                 cat comprehensive_regression_report.txt
             elif [ -f regression_details.txt ]; then
+                echo "### Pass-to-Fail Regressions" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                grep "^[0-9]\+\." regression_details.txt | while read -r line; do
+                    echo "- ${line#*. }" >> $GITHUB_STEP_SUMMARY
+                done
+                echo "" >> $GITHUB_STEP_SUMMARY
                 echo "Regression details:"
                 cat regression_details.txt
             else
