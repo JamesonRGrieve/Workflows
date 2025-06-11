@@ -1386,8 +1386,8 @@ jobs:
           if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
             MESSAGE_LINES+=("**:red_circle: ERROR: Test Discovery Failed in PR Branch (\`${PR_BRANCH}\`)**")
             MESSAGE_LINES+=("  - Type: \`${PR_ERROR_TYPE}\`")
-            MESSAGE_LINES+=("  - Details: \`\`\`${PR_ERROR_DETAILS_TRUNCATED}\`\`\`")
             MESSAGE_LINES+=("  - This usually indicates import errors or syntax issues preventing tests from being collected.")
+            MESSAGE_LINES+=("  - See attached file for detailed error information.")
           elif [[ "$PR_NO_TESTS_FOUND" == "true" ]]; then
             MESSAGE_LINES+=("**:warning: WARNING: No Tests Found in PR Branch (\`${PR_BRANCH}\`)**")
             MESSAGE_LINES+=("  - Pytest did not discover any test files matching its patterns.")
@@ -1397,20 +1397,96 @@ jobs:
           # Regression Analysis Summary
           if [[ "$HAS_REGRESSIONS" == "true" ]]; then
             MESSAGE_LINES+=("**:red_circle: REGRESSIONS DETECTED**")
-            MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
             
-            # Calculate current message length
-            CURRENT_MESSAGE=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
-            CURRENT_LENGTH=${#CURRENT_MESSAGE}
-            
-            if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
-              echo "✅ Regression file found, attaching to Discord message"
-              MESSAGE_LINES+=("  - Detailed list of ${REGRESSION_COUNT} regressions attached as \`regression_details.txt\`")
-              ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+            # Check if we have comprehensive regression file with categories
+            if [ -f "comprehensive_regression_report.txt" ]; then
+              # Extract counts from comprehensive report
+              PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_SKIP_COUNT=$(grep -o "FAIL-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              
+                             # Add category summaries (≤5 show paths, >5 show count + refer to file)
+               if [[ "$PASS_FAIL_COUNT" -gt 0 ]]; then
+                 if [[ "$PASS_FAIL_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Pass→Fail ($PASS_FAIL_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-FAIL REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("  - \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Pass→Fail:** $PASS_FAIL_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$PASS_SKIP_COUNT" -gt 0 ]]; then
+                 if [[ "$PASS_SKIP_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Pass→Skip ($PASS_SKIP_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("  - \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Pass→Skip:** $PASS_SKIP_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$FAIL_SKIP_COUNT" -gt 0 ]]; then
+                 if [[ "$FAIL_SKIP_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Fail→Skip ($FAIL_SKIP_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("  - \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Fail→Skip:** $FAIL_SKIP_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$PASS_GONE_COUNT" -gt 0 ]]; then
+                 if [[ "$PASS_GONE_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Pass→Gone ($PASS_GONE_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("  - \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Pass→Gone:** $PASS_GONE_COUNT tests (see attached file)")
+                 fi
+               fi
+               
+               if [[ "$FAIL_GONE_COUNT" -gt 0 ]]; then
+                 if [[ "$FAIL_GONE_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=("**Fail→Gone ($FAIL_GONE_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   for test_path in "${test_paths[@]}"; do
+                     MESSAGE_LINES+=("  - \`$test_path\`")
+                   done
+                 else
+                   MESSAGE_LINES+=("**Fail→Gone:** $FAIL_GONE_COUNT tests (see attached file)")
+                 fi
+               fi
+              
+              if [[ "$DISCOVERY_COUNT" -gt 0 ]]; then
+                if [[ "$DISCOVERY_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=("**Discovery Warnings ($DISCOVERY_COUNT):**")
+                  MESSAGE_LINES+=("  - $DISCOVERY_COUNT new warnings (see attached file)")
+                else
+                  MESSAGE_LINES+=("**Discovery Warnings:** $DISCOVERY_COUNT warnings (see attached file)")
+                fi
+              fi
+              
+              ARTIFACT_PATH_OUTPUT="comprehensive_regression_report.txt"
             else
-              echo "❌ Regression file not found for Discord attachment"
-              MESSAGE_LINES+=("  - Regression details file not available")
-              ARTIFACT_PATH_OUTPUT=""
+              # Fallback to simple regression count
+              MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
+              if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+                ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+              else
+                ARTIFACT_PATH_OUTPUT=""
+              fi
             fi
           elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
             # This case handles general comparison failures NOT due to specific regressions
