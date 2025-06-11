@@ -780,14 +780,20 @@ jobs:
               pr_xfailed = set(pr_data.get('xfailed_tests', []))
               pr_warnings = set(pr_data.get('warnings', []))
               
+              # All tests in each branch (regardless of outcome)
+              target_all_tests = target_passing.union(target_failing, target_skipped, target_xfailed)
+              pr_all_tests = pr_passing.union(pr_failing, pr_skipped, pr_xfailed)
+              
               # Analyze different regression types
               pass_to_fail = list(target_passing.intersection(pr_failing))
               pass_to_skip = list(target_passing.intersection(pr_skipped.union(pr_xfailed)))
               fail_to_skip = list(target_failing.intersection(pr_skipped))
+              pass_to_gone = list(target_passing - pr_all_tests)  # Passing tests that completely disappeared
+              fail_to_gone = list(target_failing - pr_all_tests)  # Failing tests that completely disappeared
               discovery_regressions = list(pr_warnings - target_warnings)
               
               # Create comprehensive regression report
-              has_any_regressions = bool(pass_to_fail or pass_to_skip or fail_to_skip or discovery_regressions)
+              has_any_regressions = bool(pass_to_fail or pass_to_skip or fail_to_skip or pass_to_gone or fail_to_gone or discovery_regressions)
               
               with open("comprehensive_regression_report.txt", "w") as f:
                   f.write("COMPREHENSIVE REGRESSION ANALYSIS\\n")
@@ -814,6 +820,20 @@ jobs:
                           f.write(f"  {i}. {test}\\n")
                       f.write("\\n")
                   
+                  if pass_to_gone:
+                      f.write(f"PASS-TO-GONE REGRESSIONS ({len(pass_to_gone)} tests)\\n")
+                      f.write("Previously passing, now completely missing:\\n")
+                      for i, test in enumerate(sorted(pass_to_gone), 1):
+                          f.write(f"  {i}. {test}\\n")
+                      f.write("\\n")
+                  
+                  if fail_to_gone:
+                      f.write(f"FAIL-TO-GONE REGRESSIONS ({len(fail_to_gone)} tests)\\n")
+                      f.write("Previously failing, now completely missing:\\n")
+                      for i, test in enumerate(sorted(fail_to_gone), 1):
+                          f.write(f"  {i}. {test}\\n")
+                      f.write("\\n")
+                  
                   if discovery_regressions:
                       f.write(f"DISCOVERY REGRESSIONS ({len(discovery_regressions)} warnings)\\n")
                       f.write("New warnings not present in target branch:\\n")
@@ -836,10 +856,12 @@ jobs:
               print(f"  Pass-to-Fail: {len(pass_to_fail)} tests")
               print(f"  Pass-to-Skip: {len(pass_to_skip)} tests")
               print(f"  Fail-to-Skip: {len(fail_to_skip)} tests")
+              print(f"  Pass-to-Gone: {len(pass_to_gone)} tests")
+              print(f"  Fail-to-Gone: {len(fail_to_gone)} tests")
               print(f"  Discovery: {len(discovery_regressions)} warnings")
               
               if has_any_regressions:
-                  print(f"❌ Total regressions detected: {len(pass_to_fail) + len(pass_to_skip) + len(fail_to_skip) + len(discovery_regressions)}")
+                  print(f"❌ Total regressions detected: {len(pass_to_fail) + len(pass_to_skip) + len(fail_to_skip) + len(pass_to_gone) + len(fail_to_gone) + len(discovery_regressions)}")
               else:
                   print("✅ No regressions detected")
                   
@@ -1016,9 +1038,11 @@ jobs:
               PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               FAIL_SKIP_COUNT=$(grep -o "FAIL-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               
-              TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + FAIL_SKIP_COUNT + DISCOVERY_COUNT))
+              TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + FAIL_SKIP_COUNT + PASS_GONE_COUNT + FAIL_GONE_COUNT + DISCOVERY_COUNT))
               
               echo "**$TOTAL_REGRESSIONS total regression(s) detected across multiple categories:**" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
@@ -1027,6 +1051,8 @@ jobs:
               echo "| Pass → Fail | $PASS_FAIL_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "| Pass → Skip/XFail | $PASS_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "| Fail → Skip | $FAIL_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Pass → Gone | $PASS_GONE_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "| Fail → Gone | $FAIL_GONE_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "| Discovery Warnings | $DISCOVERY_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
             else
