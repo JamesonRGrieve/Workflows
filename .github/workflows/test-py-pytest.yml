@@ -1058,19 +1058,65 @@ jobs:
             fi
           fi
 
-          # Check for regressions
+          # Fail if any tests passed in target branch but now fail in PR branch
           if [[ "${{ needs.perform-regression-analysis.outputs.has_regressions }}" == "true" ]]; then
+            echo "❌ PR branch has test regressions from target branch"
             REGRESSION_COUNT_VAL=${{ needs.perform-regression-analysis.outputs.regression_count }}
-            echo "❌ Regressions Found: $REGRESSION_COUNT_VAL test(s)"
+            echo "  - $REGRESSION_COUNT_VAL tests that were passing in target branch are now failing"
+
+            echo "### :x: Test Regressions Detected!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**$REGRESSION_COUNT_VAL test(s) that were passing in the target branch are now failing in the PR branch.**" >> $GITHUB_STEP_SUMMARY
+            echo "This job (\`compare-results\`) has been marked as failed due to these regressions." >> $GITHUB_STEP_SUMMARY
+
+            if [ -f regression_details.txt ]; then
+                echo "Failing tests (regressions) list:"
+                cat regression_details.txt
+            else
+                echo "::warning::Regression details file (regression_details.txt) not found in Compare test results step. It might be available as an artifact from the 'perform-regression-analysis' job."
+            fi
             exit 1
           fi
 
-          # Compare overall results  
+          # Continue with the original comparison if no regressions
           if (( $(echo "$PR_PASSED >= $TARGET_PASSED" | bc -l) )) && (( $(echo "$PR_PERCENTAGE >= $TARGET_PERCENTAGE" | bc -l) )); then
-            echo "✅ Results: Equal or better than target"
+            echo "✅ PR branch has equal or better test results than target branch"
+            
+            # Additional verbose information about improvement
+            if (( $(echo "$PR_PASSED > $TARGET_PASSED" | bc -l) )); then
+              IMPROVEMENT=$(( $PR_PASSED - $TARGET_PASSED ))
+              echo "  - Improvement: $IMPROVEMENT more passing tests than target branch"
+            fi
+            
+            if (( $(echo "$PR_PERCENTAGE > $TARGET_PERCENTAGE" | bc -l) )); then
+              PERCENTAGE_IMPROVEMENT=$(echo "$PR_PERCENTAGE - $TARGET_PERCENTAGE" | bc -l)
+              echo "  - Percentage improvement: +${PERCENTAGE_IMPROVEMENT}% compared to target branch"
+            fi
+            
             exit 0
           else
-            echo "❌ Results: Worse than target"
+            echo "❌ PR branch has worse test results than target branch"
+            echo "  - Passed tests: $PR_PASSED vs $TARGET_PASSED on target branch"
+            echo "  - Pass percentage: $PR_PERCENTAGE% vs $TARGET_PERCENTAGE% on target branch"
+            
+            # Add to job summary for general comparison failure
+            echo "### :x: Test Comparison Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The PR branch has worse test results than the target branch:" >> $GITHUB_STEP_SUMMARY
+            echo "- Passed tests: $PR_PASSED (PR) vs $TARGET_PASSED (Target)" >> $GITHUB_STEP_SUMMARY
+            echo "- Pass percentage: $PR_PERCENTAGE% (PR) vs $TARGET_PERCENTAGE% (Target)" >> $GITHUB_STEP_SUMMARY
+            
+            # Calculate regression metrics
+            if (( $(echo "$PR_PASSED < $TARGET_PASSED" | bc -l) )); then
+              REGRESSION=$(( $TARGET_PASSED - $PR_PASSED ))
+              echo "  - Regression: $REGRESSION fewer passing tests than target branch"
+            fi
+            
+            if (( $(echo "$PR_PERCENTAGE < $TARGET_PERCENTAGE" | bc -l) )); then
+              PERCENTAGE_REGRESSION=$(echo "$TARGET_PERCENTAGE - $PR_PERCENTAGE" | bc -l)
+              echo "  - Percentage regression: -${PERCENTAGE_REGRESSION}% compared to target branch"
+            fi
+            
             exit 1
           fi
 
