@@ -375,9 +375,7 @@ jobs:
           name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
             pr_test_data.json
-            debug_*.log
-            collection_output.txt
-            error_details.txt
+            test_output.txt
             pr_results.json
           retention-days: 3
           if-no-files-found: ignore
@@ -667,9 +665,7 @@ jobs:
           name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
             target_test_data.json
-            debug_target_*.log
-            collection_output.txt
-            error_details.txt
+            target_test_output.txt
             target_results.json
           retention-days: 3
           if-no-files-found: ignore
@@ -900,10 +896,10 @@ jobs:
                   print(f"⚠️ Skip/XFail Regressions: {total_skip_xfail_regressions} test(s)")
                   
                   if passing_to_skipped:
-                      print(f"::warning::Passing→Skipped Regressions: {len(passing_to_skipped)} test(s) that were passing in target are now skipped in PR")
+                      print(f"⚠️ Passing→Skipped: {len(passing_to_skipped)} test(s)")
                   
                   if passing_to_xfailed:
-                      print(f"::warning::Passing→XFailed Regressions: {len(passing_to_xfailed)} test(s) that were passing in target are now xfailed in PR")
+                      print(f"⚠️ Passing→XFailed: {len(passing_to_xfailed)} test(s)")
               else:
                   print("✅ No skip/xfail regressions detected")
           except Exception as e:
@@ -954,19 +950,11 @@ jobs:
               resolved_warnings = list(target_warning_set - pr_warning_set)
               
               if new_warnings:
-                  print(f"::warning::Warning Regressions: {len(new_warnings)} new warning group(s) detected in PR branch that weren't present in target branch.")
-                  for i, warning in enumerate(new_warnings[:5], 1):  # Limit to first 5 for readability
-                      print(f"::warning::New Warning {i}: {warning[:200]}...")
-                  if len(new_warnings) > 5:
-                      print(f"::warning::... and {len(new_warnings) - 5} more new warnings")
+                  print(f"⚠️ Warning Regressions: {len(new_warnings)} new warning(s) detected")
+              elif resolved_warnings:
+                  print(f"✅ Warning Improvements: {len(resolved_warnings)} warning(s) resolved")
               else:
-                  print("✅ No new warnings detected")
-              
-              if resolved_warnings:
-                  print(f"::notice::Warning Improvements: {len(resolved_warnings)} warning group(s) from target branch have been resolved in PR branch.")
-              
-              if not new_warnings and not resolved_warnings:
-                  print("✅ Warning status unchanged between branches")
+                  print("✅ No warning changes detected")
                   
           except Exception as e:
               print(f"Error in warning regression analysis: {e}")
@@ -1019,45 +1007,15 @@ jobs:
               removed_tests = list(target_all_set - pr_all_set)  # In target but not in PR
               added_tests = list(pr_all_set - target_all_set)    # In PR but not in target
               
-              # Report removed tests (warnings)
-              if removed_tests:
-                  print(f"Found {len(removed_tests)} tests that were removed from target branch!")
-                  
-                  # Build comprehensive removal warning
-                  removal_parts = [f"Test Removal Analysis: {len(removed_tests)} test(s) that existed in target branch are missing from PR branch."]
-                  removal_parts.append(f"REMOVED Tests ({len(removed_tests)}):")
-                  for idx, test in enumerate(sorted(removed_tests), 1):
-                      removal_parts.append(f"  {idx}. {test}")
-                  removal_parts.append("These test removals should be reviewed to ensure they are intentional. If tests were renamed or moved, this may show as removal + addition.")
-                  
-                  # Print as single warning annotation
-                  combined_removal_warning = " ".join(removal_parts)
-                  print(f"::warning::{combined_removal_warning}")
+              # Report test changes
+              if removed_tests and added_tests:
+                  print(f"📊 Test Changes: +{len(added_tests)} added, -{len(removed_tests)} removed")
+              elif added_tests:
+                  print(f"✅ Test Additions: {len(added_tests)} new test(s) added")
+              elif removed_tests:
+                  print(f"⚠️ Test Removals: {len(removed_tests)} test(s) removed")
               else:
-                  print("No test removals detected.")
-              
-              # Report added tests (notifications/info)
-              if added_tests:
-                  print(f"Found {len(added_tests)} new tests added in PR branch!")
-                  
-                  # Build comprehensive addition notice
-                  addition_parts = [f"Test Addition Analysis: {len(added_tests)} new test(s) have been added in the PR branch."]
-                  addition_parts.append(f"NEW Tests ({len(added_tests)}):")
-                  for idx, test in enumerate(sorted(added_tests), 1):
-                      addition_parts.append(f"  {idx}. {test}")
-                  addition_parts.append("New tests detected - this indicates expanded test coverage!")
-                  
-                  # Print as single notice annotation
-                  combined_addition_notice = " ".join(addition_parts)
-                  print(f"::notice::{combined_addition_notice}")
-              else:
-                  print("No new tests detected in PR branch.")
-              
-              # Summary
-              if not removed_tests and not added_tests:
-                  print("Test suite composition is unchanged between target and PR branches.")
-              else:
-                  print(f"Test suite changes: {len(added_tests)} added, {len(removed_tests)} removed")
+                  print("✅ Test suite unchanged")
                   
           except Exception as e:
               print(f"Error in test addition/removal analysis: {e}")
@@ -1115,15 +1073,6 @@ jobs:
             echo "❌ Results: Worse than target"
             exit 1
           fi
-
-      - name: Upload comparison analysis logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: comparison_analysis_logs_${{ github.event.pull_request.number || github.run_id }}
-          path: debug_*_analysis.log
-          retention-days: 3
-          if-no-files-found: ignore
 
   perform-regression-analysis:
     needs: [test-source-branch, test-target-branch]
@@ -1428,15 +1377,6 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
-
-      - name: Upload notification construction debug logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: notification_debug_logs_${{ github.event.pull_request.number || github.run_id }}
-          path: debug_notification_construction.log
-          retention-days: 3
-          if-no-files-found: ignore
 
   notify-discord:
     name: Send Discord Notification
