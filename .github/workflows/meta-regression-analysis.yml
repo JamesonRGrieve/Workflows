@@ -205,10 +205,6 @@ jobs:
         run: |
           echo "Regressions detected. Failing the job as per configuration."
           REGRESSION_COUNT_VAL=${{ steps.check-regressions-script.outputs.REGRESSION_COUNT }}
-          echo "### :x: Regressions Found!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**$REGRESSION_COUNT_VAL regression(s) detected.** This job was intentionally failed." >> $GITHUB_STEP_SUMMARY
-          echo "The 'Upload regression details artifact' step will still attempt to upload details." >> $GITHUB_STEP_SUMMARY
           exit 1
 
       - name: Upload regression details artifact
