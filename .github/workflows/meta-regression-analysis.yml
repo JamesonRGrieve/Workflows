@@ -206,11 +206,3 @@ jobs:
           echo "Regressions detected. Failing the job as per configuration."
           REGRESSION_COUNT_VAL=${{ steps.check-regressions-script.outputs.REGRESSION_COUNT }}
           exit 1
-
-      - name: Upload regression details artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: regression_details_pr_${{ inputs.pr_number || inputs.run_id }}_${{ inputs.item_type_plural }}
-          path: regression_details.txt
-          retention-days: 7
