@@ -98,15 +98,8 @@ jobs:
       - name: Check for test collection errors
         id: check-collection
         run: |
-          # Create verbose debug file for artifact
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_collection.log) 2>&1
-
           echo "Running pytest collection check..."
           python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
-
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
 
           # Set default values
           HAS_COLLECTION_ERRORS="false"
@@ -175,48 +168,36 @@ jobs:
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
-          # Save full collection output to debug file for artifact
-          echo "=== FULL COLLECTION OUTPUT ===" >> debug_collection.log
-          cat collection_output.txt >> debug_collection.log
+          # Clean summary output
+          if [[ "$HAS_COLLECTION_ERRORS" == "true" ]]; then
+            echo "❌ Discovery Error: $ERROR_TYPE"
+          elif [[ "$NO_TESTS_FOUND" == "true" ]]; then
+            echo "⚠️ No Tests Found"
+          else
+            echo "✅ Discovery Success"
+          fi
 
       - name: Run tests on PR Branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          # Create verbose debug file for artifact
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_test_run.log) 2>&1
-
           echo "Running tests on PR branch..."
-          python -m pytest -vv --json-report --json-report-file=pr_results.json || true
-
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
+          python -m pytest -vv --json-report --json-report-file=pr_results.json --tb=short > test_output.txt 2>&1 || true
 
           if [ -f pr_results.json ]; then
-            echo "Test results file successfully created for PR branch"
-            # Save first 200 chars to debug file only
-            echo "=== JSON RESULTS PREVIEW ===" >> debug_test_run.log
-            head -c 200 pr_results.json >> debug_test_run.log
+            echo "✅ Test execution completed"
           else
-            echo "::error::Failed to create test results file for PR branch"
+            echo "❌ Test execution failed"
           fi
 
       - name: Extract test results and create artifacts
         id: extract-results
         run: |
           echo "PR_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_ENV
-          echo "Processing test results for PR branch: $PR_BRANCH"
-
-          # Create debug file for detailed output
-          exec 3>&1 4>&2
-          exec 1> >(tee -a debug_extract_results.log) 2>&1
 
           python -c "
           import json
           import sys
           import os
-
-          print('Starting test results extraction script for PR branch')
 
           # Default values in case file doesn't exist or is invalid
           pr_total = 0
@@ -328,6 +309,33 @@ jobs:
               f.write(f'skipped_count={len(skipped_tests)}\\n')
               f.write(f'xfailed_count={len(xfailed_tests)}\\n')
 
+          # Extract warnings from test output
+          warnings_list = []
+          try:
+              with open('test_output.txt', 'r') as f:
+                  content = f.read()
+                  # Extract warnings section
+                  if '============================== warnings summary ===============================' in content:
+                      warnings_section = content.split('============================== warnings summary ===============================')[1]
+                      if '-- Docs:' in warnings_section:
+                          warnings_section = warnings_section.split('-- Docs:')[0]
+                      # Parse individual warnings
+                      current_warning = ''
+                      for line in warnings_section.split('\\n'):
+                          line = line.strip()
+                          if line and not line.startswith('='):
+                              if line.endswith('.py') or line.endswith('.py:'):
+                                  if current_warning:
+                                      warnings_list.append(current_warning.strip())
+                                  current_warning = line
+                              else:
+                                  current_warning += ' ' + line
+                      if current_warning:
+                          warnings_list.append(current_warning.strip())
+              print(f'Extracted {len(warnings_list)} warnings from test output')
+          except Exception as e:
+              print(f'Could not extract warnings: {e}')
+
           # Save test lists to artifact files instead of job outputs
           test_data = {
               'failing_tests': failing_tests,
@@ -335,7 +343,8 @@ jobs:
               'xfailed_tests': xfailed_tests,
               'all_tests': all_tests,
               'skipped_tests_with_reasons': skipped_tests_with_reasons,
-              'xfailed_tests_with_reasons': xfailed_tests_with_reasons
+              'xfailed_tests_with_reasons': xfailed_tests_with_reasons,
+              'warnings': warnings_list
           }
 
           with open('pr_test_data.json', 'w') as f:
