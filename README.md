@@ -10,3 +10,5 @@
 *If an action is language/framework specific, a `lang-` section follows the above prefix before the descriptor.
 ## Triggers:
 The `triggers` folder contains trigger actions that go into repositories to trigger the core actions.
+- `on-pr-`: Triggers on PR made to specified branches.
+- `on-push-`: Triggers on push made to specified branches.

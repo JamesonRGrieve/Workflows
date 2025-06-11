@@ -1,0 +1,71 @@
+flowchart LR
+    TIME["on-day"]
+    subgraph CM ["Common"]
+        PR_DEV["on-pr-dev"]
+        PR_MAIN["on-pr-main"]
+        PUSH["on-push"]
+        PUBLISH["on-publish"]
+        ISSUE_CLOSE["on-issue-close"]
+        ISSUE["on-issue"]
+        subgraph FE ["Frontend Repositories"]
+            FE_PUSH["on-push"]
+            FE_PUBLISH["on-publish"]
+        end
+        subgraph BE ["Backend Repositories"]
+            BE_PUSH["on-push"]
+            BE_PUBLISH["on-publish"]
+        end
+    end
+    subgraph WF ["Workflows Repository"]
+        WF_BUILD_NEXT["build-next"]
+        WF_ALERT_DISCORD["alert-discord"]
+        WF_GH_PR_ASSIGNEES["gh-pr-assignees"]
+        WF_GH_PROJECTS_QA["gh-projects-qa #4"]
+        WF_GH_PROJECTS_TIME["gh-projects-time #2"]
+        WF_GH_PROJECTS_BLOCKERS["gh-projects-blockers #3"]
+        WF_GH_SUBMODULES["gh-submodules"]
+        WF_GH_TRIGGER_SYNC["gh-trigger-sync #6"]
+        WF_GH_META_SYNC["gh-meta-sync #5"]
+        WF_GH_TEST_DOWNSTREAM["gh-test-downstream"]
+        WF_META_REGRESSION["meta-regression-analysis"]
+        WF_PUBLISH_GHCR["publish-ghcr"]
+        WF_PUBLISH_PY_PYPI["publish-py-pypi"]
+        WF_PUBLISH_STORYBOOK["publish-storybook"]
+        WF_PUBLISH_TS_NPM["publish-ts-npm"]
+        WF_TEST_PY_LINT["test-py-lint"]
+        WF_TEST_PY_PYTEST["test-py-pytest"]
+        WF_TEST_STORYBOOK["test-storybook"]
+        WF_TEST_TS_LINT["test-ts-lint"]
+    end    
+
+    DONE["Passed - If PR, Mergable"]
+    
+    FE_PUSH --> WF_TEST_TS_LINT
+    WF_TEST_TS_LINT -.-> WF_BUILD_NEXT
+    WF_BUILD_NEXT -.-> WF_TEST_STORYBOOK
+    WF_TEST_STORYBOOK -.-> WF_META_REGRESSION
+    FE_PUBLISH -->|If has package| WF_PUBLISH_TS_NPM
+
+    BE_PUSH --> WF_TEST_PY_LINT
+    WF_TEST_PY_LINT -.-> WF_TEST_PY_PYTEST
+    WF_TEST_PY_PYTEST -.-> WF_META_REGRESSION
+    BE_PUBLISH --> WF_PUBLISH_PY_PYPI
+
+    PUSH --> |Push to dev or main<br>Require meta-regression-analysis| WF_PUBLISH_GHCR
+    PR_MAIN --> WF_GH_TEST_DOWNSTREAM
+    PUBLISH -->|Require meta-regression-analysis| WF_PUBLISH_GHCR
+    PUSH --> WF_GH_TRIGGER_SYNC
+    PR_MAIN --> WF_GH_SUBMODULES
+    PR_DEV --> WF_GH_SUBMODULES
+    PR_MAIN --> WF_GH_PR_ASSIGNEES
+    PR_DEV --> WF_GH_PR_ASSIGNEES
+    ISSUE_CLOSE --> WF_GH_PROJECTS_TIME
+    ISSUE --> WF_GH_PROJECTS_BLOCKERS
+    WF_META_REGRESSION -.->|Pass<br>If push to dev or main| WF_PUBLISH_GHCR
+    WF_PUBLISH_GHCR --> DONE
+    WF_META_REGRESSION -->|Pass<br>If PR to dev| DONE
+    WF_META_REGRESSION -.->|Pass<br>If storybook| WF_PUBLISH_STORYBOOK
+    WF_META_REGRESSION -.->|Fail| WF_ALERT_DISCORD
+    WF_GH_TRIGGER_SYNC -.-> WF_GH_META_SYNC
+
+    TIME --> WF_GH_PROJECTS_QA
