@@ -931,7 +931,7 @@ jobs:
           fi
 
       - name: Upload regression details artifact
-        if: steps.check-regressions.outputs.HAS_REGRESSIONS == 'true' && steps.check-regressions.outputs.REGRESSION_COUNT > 0
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
@@ -939,6 +939,7 @@ jobs:
             regression_details.txt
             comprehensive_regression_report.txt
           retention-days: 1
+          if-no-files-found: ignore
 
       - name: Check for test additions and removals from artifacts
         run: |
@@ -1205,7 +1206,7 @@ jobs:
           fi
       - name: Download regression details (if any)
         id: download_regressions
-        if: needs.perform-regression-analysis.outputs.has_regressions == 'true' && needs.perform-regression-analysis.outputs.regression_count > 0
+        if: always()
         uses: actions/download-artifact@v4
         with:
           name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
@@ -1213,7 +1214,7 @@ jobs:
         continue-on-error: true
 
       - name: Check downloaded regression file
-        if: needs.perform-regression-analysis.outputs.has_regressions == 'true'
+        if: always()
         run: |
           echo "Checking for regression details file..."
           if [ -f "regression_details.txt" ]; then
@@ -1223,7 +1224,13 @@ jobs:
             head -5 regression_details.txt
           else
             echo "❌ Regression details file not found"
-            ls -la
+          fi
+
+          if [ -f "comprehensive_regression_report.txt" ]; then
+            echo "✅ Comprehensive regression report found"
+            echo "File size: $(wc -c < comprehensive_regression_report.txt) bytes"
+          else
+            echo "❌ Comprehensive regression report not found"
           fi
 
       - name: Construct Discord Notification
@@ -1429,9 +1436,9 @@ jobs:
                if [[ "$PASS_FAIL_COUNT" -gt 0 ]]; then
                  if [[ "$PASS_FAIL_COUNT" -le 5 ]]; then
                    MESSAGE_LINES+=("**Pass→Fail ($PASS_FAIL_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "PASS-TO-FAIL REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-FAIL REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_FAIL_COUNT | sed 's/^  [0-9]\+\. //')
                    for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("  - \`$test_path\`")
+                     MESSAGE_LINES+=("• \`$test_path\`")
                    done
                  else
                    MESSAGE_LINES+=("**Pass→Fail:** $PASS_FAIL_COUNT tests (see attached file)")
@@ -1441,9 +1448,9 @@ jobs:
                if [[ "$PASS_SKIP_COUNT" -gt 0 ]]; then
                  if [[ "$PASS_SKIP_COUNT" -le 5 ]]; then
                    MESSAGE_LINES+=("**Pass→Skip ($PASS_SKIP_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "PASS-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_SKIP_COUNT | sed 's/^  [0-9]\+\. //')
                    for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("  - \`$test_path\`")
+                     MESSAGE_LINES+=("• \`$test_path\`")
                    done
                  else
                    MESSAGE_LINES+=("**Pass→Skip:** $PASS_SKIP_COUNT tests (see attached file)")
@@ -1453,9 +1460,9 @@ jobs:
                if [[ "$FAIL_SKIP_COUNT" -gt 0 ]]; then
                  if [[ "$FAIL_SKIP_COUNT" -le 5 ]]; then
                    MESSAGE_LINES+=("**Fail→Skip ($FAIL_SKIP_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_COUNT | sed 's/^  [0-9]\+\. //')
                    for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("  - \`$test_path\`")
+                     MESSAGE_LINES+=("• \`$test_path\`")
                    done
                  else
                    MESSAGE_LINES+=("**Fail→Skip:** $FAIL_SKIP_COUNT tests (see attached file)")
@@ -1465,9 +1472,9 @@ jobs:
                if [[ "$PASS_GONE_COUNT" -gt 0 ]]; then
                  if [[ "$PASS_GONE_COUNT" -le 5 ]]; then
                    MESSAGE_LINES+=("**Pass→Gone ($PASS_GONE_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "PASS-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   readarray -t test_paths < <(grep -A 100 "PASS-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_GONE_COUNT | sed 's/^  [0-9]\+\. //')
                    for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("  - \`$test_path\`")
+                     MESSAGE_LINES+=("• \`$test_path\`")
                    done
                  else
                    MESSAGE_LINES+=("**Pass→Gone:** $PASS_GONE_COUNT tests (see attached file)")
@@ -1477,9 +1484,9 @@ jobs:
                if [[ "$FAIL_GONE_COUNT" -gt 0 ]]; then
                  if [[ "$FAIL_GONE_COUNT" -le 5 ]]; then
                    MESSAGE_LINES+=("**Fail→Gone ($FAIL_GONE_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -5 | sed 's/^  [0-9]\+\. //')
+                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_GONE_COUNT | sed 's/^  [0-9]\+\. //')
                    for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("  - \`$test_path\`")
+                     MESSAGE_LINES+=("• \`$test_path\`")
                    done
                  else
                    MESSAGE_LINES+=("**Fail→Gone:** $FAIL_GONE_COUNT tests (see attached file)")
@@ -1489,21 +1496,15 @@ jobs:
               if [[ "$DISCOVERY_COUNT" -gt 0 ]]; then
                 if [[ "$DISCOVERY_COUNT" -le 5 ]]; then
                   MESSAGE_LINES+=("**Discovery Warnings ($DISCOVERY_COUNT):**")
-                  MESSAGE_LINES+=("  - $DISCOVERY_COUNT new warnings (see attached file)")
+                  MESSAGE_LINES+=("• $DISCOVERY_COUNT new warnings (see attached file)")
                 else
                   MESSAGE_LINES+=("**Discovery Warnings:** $DISCOVERY_COUNT warnings (see attached file)")
                 fi
               fi
               
-              ARTIFACT_PATH_OUTPUT="comprehensive_regression_report.txt"
             else
               # Fallback to simple regression count
               MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
-              if [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
-                ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
-              else
-                ARTIFACT_PATH_OUTPUT=""
-              fi
             fi
           elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
             # This case handles general comparison failures NOT due to specific regressions
@@ -1519,6 +1520,15 @@ jobs:
 
           MESSAGE_LINES+=("---")
           MESSAGE_LINES+=("[View Workflow Run](${ACTION_RUN_URL})")
+
+          # Set artifact path - always prefer comprehensive report if it exists
+          if [ -f "comprehensive_regression_report.txt" ]; then
+            ARTIFACT_PATH_OUTPUT="comprehensive_regression_report.txt"
+          elif [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
+            ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
+          else
+            ARTIFACT_PATH_OUTPUT=""
+          fi
 
           # Construct with actual newlines
           FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
