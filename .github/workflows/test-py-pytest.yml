@@ -350,6 +350,7 @@ jobs:
 
           # Save test lists to artifact files instead of job outputs
           test_data = {
+              'passing_tests': passing_tests,
               'failing_tests': failing_tests,
               'skipped_tests': skipped_tests,
               'xfailed_tests': xfailed_tests,
