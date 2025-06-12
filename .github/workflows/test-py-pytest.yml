@@ -207,6 +207,7 @@ jobs:
           skipped_tests = []
           xfailed_tests = []
           all_tests = []
+          passing_tests = []
           skipped_tests_with_reasons = {}
           xfailed_tests_with_reasons = {}
 
@@ -220,7 +221,7 @@ jobs:
               if pr_results.get('exitcode', 0) > 1:
                   print('Detected non-zero exitcode, likely a collection error')
                   if 'collectors' in pr_results and pr_results['collectors']:
-                      print(f'Collection errors found: {pr_results[\"collectors\"]}')
+                      print(f'Collection errors found: {pr_results["collectors"]}')
                   pr_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   pr_passed = 0
               elif 'summary' in pr_results and isinstance(pr_results['summary'], dict):
@@ -238,7 +239,9 @@ jobs:
                           nodeid = test.get('nodeid', '')
                           if nodeid:
                               all_tests.append(nodeid)  # Track all tests regardless of outcome
-                              if outcome in ['failed', 'error']:
+                              if outcome == 'passed':
+                                  passing_tests.append(nodeid)
+                              elif outcome in ['failed', 'error']:
                                   failing_tests.append(nodeid)
                               elif outcome == 'skipped':
                                   skipped_tests.append(nodeid)
@@ -268,6 +271,7 @@ jobs:
                                       xfail_reason = str(test['call']['longrepr'])
                                   xfailed_tests_with_reasons[nodeid] = xfail_reason.strip()
                       
+                      print(f'Found {len(passing_tests)} passing tests')
                       print(f'Found {len(failing_tests)} failing tests')
                       print(f'Found {len(skipped_tests)} skipped tests')
                       print(f'Found {len(xfailed_tests)} xfailed tests')
@@ -286,7 +290,7 @@ jobs:
               if 'pr_results' in locals():
                   print(f'Available keys: {list(pr_results.keys())}')
                   if 'summary' in pr_results:
-                      print(f'Summary structure: {pr_results[\"summary\"]}')
+                      print(f'Summary structure: {pr_results["summary"]}')
           except Exception as e:
               print(f'Error processing results: {e}')
               import traceback
@@ -548,7 +552,7 @@ jobs:
               if target_results.get('exitcode', 0) > 1:
                   print('Detected non-zero exitcode, likely a collection error')
                   if 'collectors' in target_results and target_results['collectors']:
-                      print(f'Collection errors found: {target_results[\"collectors\"]}')
+                      print(f'Collection errors found: {target_results["collectors"]}')
                   target_total = 0  # Explicitly set to 0 - no tests run when collection fails
                   target_passed = 0
               elif 'summary' in target_results and isinstance(target_results['summary'], dict):
@@ -594,7 +598,7 @@ jobs:
               if 'target_results' in locals():
                   print(f'Available keys: {list(target_results.keys())}')
                   if 'summary' in target_results:
-                      print(f'Summary structure: {target_results[\"summary\"]}')
+                      print(f'Summary structure: {target_results["summary"]}')
           except Exception as e:
               print(f'Error processing results: {e}')
               import traceback
