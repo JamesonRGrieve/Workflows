@@ -532,6 +532,9 @@ jobs:
           target_passed = 0
           target_percentage = 0
           passing_tests = []
+          failing_tests = []
+          skipped_tests = []
+          xfailed_tests = []
           all_tests = []
 
           try:
@@ -557,9 +560,6 @@ jobs:
                   # Extract all test outcomes
                   if 'tests' in target_results:
                       print('Extracting all test outcomes from target')
-                      failing_tests = []
-                      skipped_tests = []
-                      xfailed_tests = []
                       for test in target_results['tests']:
                           outcome = test.get('outcome')
                           nodeid = test.get('nodeid', '')
@@ -654,9 +654,9 @@ jobs:
           # Save test lists to artifact files instead of job outputs
           test_data = {
               'passing_tests': passing_tests,
-              'failing_tests': failing_tests if 'failing_tests' in locals() else [],
-              'skipped_tests': skipped_tests if 'skipped_tests' in locals() else [],
-              'xfailed_tests': xfailed_tests if 'xfailed_tests' in locals() else [],
+              'failing_tests': failing_tests,
+              'skipped_tests': skipped_tests,
+              'xfailed_tests': xfailed_tests,
               'all_tests': all_tests,
               'warnings': warnings_list
           }
@@ -779,6 +779,18 @@ jobs:
               pr_skipped = set(pr_data.get('skipped_tests', []))
               pr_xfailed = set(pr_data.get('xfailed_tests', []))
               pr_warnings = set(pr_data.get('warnings', []))
+              
+              # Debug: Print data for troubleshooting
+              print(f"🔍 Debug - Target branch data:")
+              print(f"  Passing: {len(target_passing)} tests")
+              print(f"  Failing: {len(target_failing)} tests")
+              print(f"  Skipped: {len(target_skipped)} tests")
+              print(f"  XFailed: {len(target_xfailed)} tests")
+              print(f"🔍 Debug - PR branch data:")
+              print(f"  Passing: {len(pr_passing)} tests")
+              print(f"  Failing: {len(pr_failing)} tests")
+              print(f"  Skipped: {len(pr_skipped)} tests")
+              print(f"  XFailed: {len(pr_xfailed)} tests")
               
               # All tests in each branch (regardless of outcome)
               target_all_tests = target_passing.union(target_failing, target_skipped, target_xfailed)
