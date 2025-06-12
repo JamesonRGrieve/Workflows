@@ -200,6 +200,16 @@ jobs:
             fi
           fi
 
+      - name: Upload regression analysis results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression_analysis_results_${{ inputs.pr_number || inputs.run_id }}
+          path: |
+            regression_details.txt
+          retention-days: 3
+          if-no-files-found: ignore
+
       - name: Fail job if regressions are found
         if: steps.check-regressions-script.outputs.HAS_REGRESSIONS == 'true'
         run: |
