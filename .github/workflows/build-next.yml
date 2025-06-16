@@ -51,6 +51,6 @@ jobs:
           node-version: ${{ inputs.node-version }}
       - run: |
           npm i lightningcss-linux-x64-gnu @tailwindcss/oxide-linux-x64-gnu sass-embedded-linux-x64
-          npm ci
+          npm i
           npm list zod --depth=0
           npm run build
