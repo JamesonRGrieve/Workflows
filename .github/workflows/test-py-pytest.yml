@@ -99,7 +99,7 @@ jobs:
         id: check-collection
         run: |
           echo "Running pytest collection check..."
-          
+          python -m pytest --collect-only -v --continue-on-collection-errors > collection_output.txt 2>&1 || true
 
           # Set default values
           HAS_COLLECTION_ERRORS="false"
