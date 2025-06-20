@@ -1061,7 +1061,17 @@ jobs:
               DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               
               TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + FAIL_SKIP_COUNT + PASS_GONE_COUNT + FAIL_GONE_COUNT + DISCOVERY_COUNT))
-              
+             if [ -f regression_details.txt ]; then
+                  echo ""
+                  echo "Regression details (raw):"
+                  cat regression_details.txt
+             fi
+
+             if [ -f comprehensive_regression_report.txt ]; then
+                  echo ""
+                  echo "Comprehensive regression report (raw):"
+                  cat comprehensive_regression_report.txt
+             fi
               echo "**$TOTAL_REGRESSIONS total regression(s) detected across multiple categories:**" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "| Category | Count |" >> $GITHUB_STEP_SUMMARY
