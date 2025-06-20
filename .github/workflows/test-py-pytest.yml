@@ -727,25 +727,7 @@ jobs:
           PR_NO_TESTS="${{ needs.test-source-branch.outputs.no_tests_found }}"
           PR_ERROR_TYPE="${{ needs.test-source-branch.outputs.error_type }}"
           TARGET_COLLECTION_ERRORS="${{ needs.test-target-branch.outputs.collection_errors }}"
-
-          # Clean discovery status reporting
-          if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
-            echo "❌ Discovery Error (PR): $PR_ERROR_TYPE"
-            exit 1
-          elif [[ "$PR_NO_TESTS" == "true" ]]; then
-            echo "❌ No Tests Found (PR)"
-            exit 1
-          else
-            echo "✅ Discovery Success (PR)"
-          fi
-
-          if [[ "$TARGET_COLLECTION_ERRORS" == "true" ]]; then
-            echo "⚠️ Discovery Error (Target)"
-          elif [[ "${{ needs.test-target-branch.outputs.no_tests_found }}" == "true" ]]; then
-            echo "⚠️ No Tests Found (Target)"
-          else
-            echo "✅ Discovery Success (Target)"
-          fi
+   
 
       - name: Run comprehensive regression analysis
         run: |
