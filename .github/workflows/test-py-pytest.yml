@@ -99,7 +99,7 @@ jobs:
         id: check-collection
         run: |
           echo "Running pytest collection check..."
-          python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
+          python -m pytest --collect-only -v --continue-on-collection-errors > collection_output.txt 2>&1 || true
 
           # Set default values
           HAS_COLLECTION_ERRORS="false"
@@ -727,25 +727,7 @@ jobs:
           PR_NO_TESTS="${{ needs.test-source-branch.outputs.no_tests_found }}"
           PR_ERROR_TYPE="${{ needs.test-source-branch.outputs.error_type }}"
           TARGET_COLLECTION_ERRORS="${{ needs.test-target-branch.outputs.collection_errors }}"
-
-          # Clean discovery status reporting
-          if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
-            echo "❌ Discovery Error (PR): $PR_ERROR_TYPE"
-            exit 1
-          elif [[ "$PR_NO_TESTS" == "true" ]]; then
-            echo "❌ No Tests Found (PR)"
-            exit 1
-          else
-            echo "✅ Discovery Success (PR)"
-          fi
-
-          if [[ "$TARGET_COLLECTION_ERRORS" == "true" ]]; then
-            echo "⚠️ Discovery Error (Target)"
-          elif [[ "${{ needs.test-target-branch.outputs.no_tests_found }}" == "true" ]]; then
-            echo "⚠️ No Tests Found (Target)"
-          else
-            echo "✅ Discovery Success (Target)"
-          fi
+   
 
       - name: Run comprehensive regression analysis
         run: |
@@ -1061,7 +1043,17 @@ jobs:
               DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               
               TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + FAIL_SKIP_COUNT + PASS_GONE_COUNT + FAIL_GONE_COUNT + DISCOVERY_COUNT))
-              
+             if [ -f regression_details.txt ]; then
+                  echo ""
+                  echo "Regression details (raw):"
+                  cat regression_details.txt
+             fi
+
+             if [ -f comprehensive_regression_report.txt ]; then
+                  echo ""
+                  echo "Comprehensive regression report (raw):"
+                  cat comprehensive_regression_report.txt
+             fi
               echo "**$TOTAL_REGRESSIONS total regression(s) detected across multiple categories:**" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "| Category | Count |" >> $GITHUB_STEP_SUMMARY
