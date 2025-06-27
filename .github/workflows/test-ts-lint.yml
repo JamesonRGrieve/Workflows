@@ -259,6 +259,8 @@ jobs:
       item_type_plural: "files with lint errors"
       pr_number: ${{ github.event.pull_request.number }}
       run_id: ${{ github.run_id }}
+      target_branch_artifact_name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      pr_branch_artifact_name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
     # Removed outputs and steps from here, as they are defined by the reusable workflow
     # and accessed via `needs.analyze-regressions.outputs.*` in subsequent jobs.
 
