@@ -1,6 +1,7 @@
 name: Reusable Lint TypeScript & Check Regressions
 
 on:
+  workflow dispatch:
   workflow_call:
     inputs:
       node-version:
