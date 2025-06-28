@@ -1,0 +1,12 @@
+name: 🔧 TEMP - Run Test TS Lint Reusable Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-lint-call:
+    uses: ./.github/workflows/test-ts-lint.yml
+    with:
+      lint_command: "npm run lint"
+      fix_command: "npm run lint -- --fix"
+      target_branch_to_compare: "main"
