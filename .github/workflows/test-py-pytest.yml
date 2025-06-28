@@ -690,7 +690,7 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-      # Add a step to set default outputs when collection errors are detected
+      # Add the step to set default outputs when collection errors are detected
       - name: Set collection error outputs
         id: set-error-outputs
         if: steps.check-collection.outputs.has_collection_errors == 'true'
