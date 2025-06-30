@@ -1,0 +1,39 @@
+name: Reusable Metadata Sync
+
+on:
+  workflow_call:
+    inputs:
+      sync_labels:
+        required: false
+        type: boolean
+        default: true
+      runs_on:
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+jobs:
+  sync:
+    runs-on: ${{ inputs.runs_on }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # ✅ Use GITHUB_TOKEN safely
+
+    steps:
+      - name: Checkout self
+        uses: actions/checkout@v4
+        with:
+          repository: your-org-name/Workflows
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: source
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Label Sync Script
+        if: ${{ inputs.sync_labels }}
+        run: python3 source/scripts/sync_labels.py

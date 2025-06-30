@@ -30,6 +30,14 @@ on:
         required: false
         type: string
         default: "ubuntu-latest"
+      target_branch_artifact_name:
+        required: false
+        type: string
+        default: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      pr_branch_artifact_name:
+        required: false
+        type: string
+        default: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
     outputs:
       lint_errors_pr_branch:
         description: "JSON string of lint errors on the PR branch after attempting fixes."
@@ -259,6 +267,8 @@ jobs:
       item_type_plural: "files with lint errors"
       pr_number: ${{ github.event.pull_request.number }}
       run_id: ${{ github.run_id }}
+      target_branch_artifact_name: ${{ inputs.target_branch_artifact_name }}
+      pr_branch_artifact_name: ${{ inputs.pr_branch_artifact_name }}
     # Removed outputs and steps from here, as they are defined by the reusable workflow
     # and accessed via `needs.analyze-regressions.outputs.*` in subsequent jobs.
 
