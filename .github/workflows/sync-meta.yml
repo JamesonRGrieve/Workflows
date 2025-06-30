@@ -1,9 +1,26 @@
+# Reusable Workflow: Workflows/.github/workflows/sync-meta.yml
+
 name: Reusable Metadata Sync
 
 on:
   workflow_call:
+    secrets:
+      PAT_TOKEN:
+        required: true
     inputs:
       sync_labels:
+        required: false
+        type: boolean
+        default: true
+      sync_templates:
+        required: false
+        type: boolean
+        default: true
+      sync_milestones:
+        required: false
+        type: boolean
+        default: true
+      sync_branch_rules:
         required: false
         type: boolean
         default: true
@@ -15,15 +32,12 @@ on:
 jobs:
   sync:
     runs-on: ${{ inputs.runs_on }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # ✅ Use GITHUB_TOKEN safely
-
     steps:
-      - name: Checkout self
+      - name: Checkout source repo (self)
         uses: actions/checkout@v4
         with:
-          repository: your-org-name/Workflows
-          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: JamesonRGrieve/Workflows
+          token: ${{ secrets.PAT_TOKEN }}
           path: source
 
       - name: Set up Python
@@ -32,8 +46,32 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests PyGithub
 
-      - name: Run Label Sync Script
+      - name: Sync Labels
         if: ${{ inputs.sync_labels }}
-        run: python3 source/scripts/sync_labels.py
+        run: |
+          python3 source/scripts/sync_labels.py
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+      - name: Sync Templates
+        if: ${{ inputs.sync_templates }}
+        run: |
+          python3 source/scripts/sync_templates.py
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+      - name: Sync Milestones
+        if: ${{ inputs.sync_milestones }}
+        run: |
+          python3 source/scripts/sync_milestones.py
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+      - name: Sync Branch Protection Rules
+        if: ${{ inputs.sync_branch_rules }}
+        run: |
+          python3 source/scripts/sync_branch_protection.py
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
