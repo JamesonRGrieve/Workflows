@@ -23,7 +23,7 @@ for repo_name in TARGET_REPOS:
         try:
             source_files = SOURCE_REPO.get_contents(dir_name)
             for file in source_files:
-                print(f"\n📁 Syncing {file.path} to {repo_name}")
+                print(f"\nSyncing {file.path} to {repo_name}")
                 content = file.decoded_content.decode("utf-8")
                 target_repo.create_file(
                     path=file.path,
@@ -32,4 +32,4 @@ for repo_name in TARGET_REPOS:
                     branch="main"
                 )
         except Exception as e:
-            print(f"⚠️ Skipping {dir_name} for {repo_name}: {e}")
+            print(f"Skipping {dir_name} for {repo_name}: {e}")

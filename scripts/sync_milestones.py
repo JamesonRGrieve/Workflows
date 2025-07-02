@@ -19,7 +19,7 @@ for repo_name in TARGET_REPOS:
 
     for m in source_milestones:
         if m.title not in target_milestones:
-            print(f"📅 Creating milestone {m.title} in {repo_name}")
+            print(f"Creating milestone {m.title} in {repo_name}")
             target_repo.create_milestone(
                 title=m.title,
                 state=m.state,

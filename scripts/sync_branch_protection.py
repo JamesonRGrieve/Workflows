@@ -32,8 +32,8 @@ for repo_name in TARGET_REPOS:
     repo = g.get_repo(f"{ORG}/{repo_name}")
     for branch in PROTECTED_BRANCHES:
         try:
-            print(f"🔐 Protecting {branch} in {repo_name}")
+            print(f"Protecting {branch} in {repo_name}")
             b = repo.get_branch(branch)
             b.edit_protection(**rules)
         except Exception as e:
-            print(f"⚠️ Error protecting {branch} in {repo_name}: {e}")
+            print(f"Error protecting {branch} in {repo_name}: {e}")

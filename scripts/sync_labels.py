@@ -36,16 +36,16 @@ def create_or_update_label(repo, label):
         "description": label.get("description", "")
     })
     if res.status_code == 422 and "already_exists" in str(res.text):
-        print(f"⚠️ Label '{label['name']}' already exists in {repo}")
+        print(f"Label '{label['name']}' already exists in {repo}")
     elif res.status_code != 201:
-        print(f"❌ Failed to create label '{label['name']}' in {repo}")
+        print(f"Failed to create label '{label['name']}' in {repo}")
     else:
-        print(f"✅ Synced label '{label['name']}' to {repo}")
+        print(f"Synced label '{label['name']}' to {repo}")
 
 def sync_labels():
     labels = get_labels(SOURCE_REPO)
     for target_repo in TARGET_REPOS:
-        print(f"\n🔄 Syncing labels to {target_repo}")
+        print(f"\nSyncing labels to {target_repo}")
         for label in labels:
             create_or_update_label(target_repo, label)
 
