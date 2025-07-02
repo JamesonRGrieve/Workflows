@@ -33,11 +33,9 @@ on:
       target_branch_artifact_name:
         required: false
         type: string
-        default: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
       pr_branch_artifact_name:
         required: false
         type: string
-        default: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
     outputs:
       lint_errors_pr_branch:
         description: "JSON string of lint errors on the PR branch after attempting fixes."
