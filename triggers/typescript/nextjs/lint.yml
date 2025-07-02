@@ -15,4 +15,4 @@ jobs:
     # If secrets were needed, they would be passed here like:
     # secrets: inherit
     lint_command: npm run lint
-    fix_command: npm run lint -- --fix
+    fix_command: npm run lint --fix
