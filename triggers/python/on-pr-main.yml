@@ -39,7 +39,7 @@ jobs:
 
   call-reusable-stage-downstream:
     name: Call Reusable Stage Downstream Workflow
-    needs: [check-pr-source, run-tests] # Ensures tests pass and branch is correct before staging
+    needs: [check-pr-source, run-tests, run-bandit-check] # Ensures tests pass and branch is correct before staging
     if: needs.check-pr-source.outputs.is_from_dev == 'true'
     uses: JamesonRGrieve/Workflows/.github/workflows/test-downstream.yml@main
     with:

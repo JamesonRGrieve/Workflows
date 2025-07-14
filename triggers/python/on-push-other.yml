@@ -14,3 +14,5 @@ jobs:
     # Permissions are handled by the reusable workflow itself or should be inherited.
     # If secrets were needed, they would be passed here like:
     # secrets: inherit
+  permissions:
+  contents: write
