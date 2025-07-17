@@ -1,0 +1,79 @@
+name: Auto Date Tracking for All Issues
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  auto-date-tracking:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set Start and Completion Dates on All Issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const now = new Date().toISOString().split("T")[0];
+
+            const issues = await github.paginate(
+              github.rest.issues.listForRepo,
+              {
+                owner,
+                repo,
+                state: "all",
+                per_page: 100
+              }
+            );
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue; // skip PRs
+
+              const issue_number = issue.number;
+              const labels = issue.labels.map(label => label.name);
+              const startDateComment = `🕒 **Start Date:** ${now}`;
+              const completeDateComment = `✅ **Completion Date:** ${now}`;
+
+              const comments = await github.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number
+              });
+
+              const alreadyHasComment = (bodyText) =>
+                comments.data.some(c =>
+                  c.body.trim() === bodyText.trim() &&
+                  c.user?.type === "Bot" &&
+                  c.user?.login === "github-actions[bot]"
+                );
+
+              // 🕒 Add Start Date if labeled "In Progress"
+              if (labels.includes("In Progress") && !alreadyHasComment(startDateComment)) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number,
+                  body: startDateComment
+                });
+                console.log(`✅ Start Date set on issue #${issue_number}`);
+              }
+
+              // ✅ Add Completion Date if labeled "Complete" and issue is closed
+              if (
+                issue.state === "closed" && !alreadyHasComment(completeDateComment)
+              ) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number,
+                  body: completeDateComment
+                });
+                console.log(`✅ Completion Date set on issue #${issue_number}`);
+              }
+            }
+
+            console.log("🎉 Finished processing all issues.");
