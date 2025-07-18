@@ -7,6 +7,9 @@ on:
     branches:
       - dev
 
+permissions:
+      contents: write 
+
 jobs:
   debug-pr-context: # New job for debugging
     name: Debug PR Context

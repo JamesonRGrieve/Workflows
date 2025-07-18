@@ -2,7 +2,6 @@ name: Reusable - Set Q/A Status in Zephyrex Board
 
 on:
   workflow_call:
-   
 
 jobs:
   qa-update-status:

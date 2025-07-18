@@ -16,7 +16,6 @@ jobs:
         id: check_branch
         run: |
           IS_FROM_DEV="false"
-          # For pull requests, check if the source branch is dev
           if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.head_ref }}" == "dev" ]]; then
             IS_FROM_DEV="true"
             echo "This is a pull request coming from the dev branch into main."
@@ -28,26 +27,30 @@ jobs:
 
   run-tests:
     name: Run Pytest Comparison
-    # No explicit check_pr_source dependency, tests should run for any PR to main.
-    # If tests pass and PR is from dev, then downstream will run.
     uses: JamesonRGrieve/Workflows/.github/workflows/test-pytest.yml@main
     with:
-      # PR is to main, so compare PR branch against main.
-      target_branch_to_compare: ${{ github.base_ref }} # This will be 'main'
+      target_branch_to_compare: ${{ github.base_ref }}
     permissions:
-      contents: write # For lint within pytest
+      contents: write
+
+  run-bandit-check:
+    name: Run Bandit Regression Workflow
+    uses: JamesonRGrieve/Workflows/.github/workflows/test-bandit.yml@main
+    with:
+      target_branch_to_compare: ${{ github.base_ref }} # Usually 'main' in PRs to main
+    permissions:
+      contents: read
 
   call-reusable-stage-downstream:
     name: Call Reusable Stage Downstream Workflow
-    needs: [check-pr-source, run-tests, run-bandit-check] # Ensures tests pass and branch is correct before staging
+    needs: [check-pr-source, run-tests, run-bandit-check]
     if: needs.check-pr-source.outputs.is_from_dev == 'true'
     uses: JamesonRGrieve/Workflows/.github/workflows/test-downstream.yml@main
     with:
-      source_repo_ref: "dev" # Staging happens from the 'dev' branch of the current repo
+      source_repo_ref: "dev"
     secrets:
       PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
       DOWNSTREAM_REPOSITORIES: ${{ secrets.DOWNSTREAM_REPOSITORIES }}
     permissions:
       contents: write
       pull-requests: write
-    # Permissions are handled by the reusable workflow itself.
