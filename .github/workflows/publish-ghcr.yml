@@ -23,7 +23,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
 jobs:
   build-and-push-ghcr:
     name: Build and Push Docker Image to GHCR

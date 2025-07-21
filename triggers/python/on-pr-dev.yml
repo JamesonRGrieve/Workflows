@@ -10,7 +10,7 @@ on:
 jobs:
   debug-pr-context: # New job for debugging
     name: Debug PR Context
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Debug PR Assignees in Caller
         run: |

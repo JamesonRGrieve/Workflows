@@ -20,7 +20,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "Discord Webhook URL for failure notifications. If not provided, notifications are skipped."

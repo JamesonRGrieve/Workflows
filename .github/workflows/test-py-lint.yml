@@ -6,7 +6,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
     outputs:
       auto_formatted:
         description: "Whether Black auto-formatted files and pushed changes."

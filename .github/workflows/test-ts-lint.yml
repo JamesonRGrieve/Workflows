@@ -29,7 +29,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
     outputs:
       lint_errors_pr_branch:
         description: "JSON string of lint errors on the PR branch after attempting fixes."

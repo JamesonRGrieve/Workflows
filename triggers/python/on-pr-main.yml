@@ -8,7 +8,7 @@ on:
 jobs:
   check-pr-source:
     name: Check PR Source Branch
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       is_from_dev: ${{ steps.check_branch.outputs.is_from_dev }}
     steps:
