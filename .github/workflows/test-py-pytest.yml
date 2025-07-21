@@ -89,6 +89,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          cd src
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
           if [ -f requirements.txt ]; then 
@@ -412,6 +413,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          cd src
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
           if [ -f requirements.txt ]; then 
