@@ -713,8 +713,8 @@ jobs:
     steps:
       - name: Install bc
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y bc
+          apt-get update -y
+          apt-get install -y bc
 
       - name: Download test data artifacts
         uses: actions/download-artifact@v4
