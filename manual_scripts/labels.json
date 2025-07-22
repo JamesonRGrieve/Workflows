@@ -1,0 +1,174 @@
+{
+    "labels": {
+        "": {
+            "goal": {
+                "color": "#0e8a16",
+                "labels": {
+                    "eff": "Aims to address concerns with efficiency.",
+                    "maint": "Aims to address concerns with maintainability.",
+                    "qol": "Relates to quality of life.",
+                    "test": "Relates to test coverage.",
+                    "truth": "Relates to targetting a single source of truth / Pydantic libraries."
+                }
+            },
+            "categories": {
+                "color": "#006b75",
+                "labels": {
+                    "env": "Relates to environment control.",
+                    "ops": "Relates to developer operations.",
+                    "ext": "Relates to the extensions system."
+                }
+            },
+            "bug": {
+                "color": "#b60205",
+                "labels": {
+                    "type-bug": "Aims to address concerns with inoperable functionality."
+                }
+            },
+            "refactor": {
+                "color": "#d93f0b",
+                "labels": {
+                    "type-conv": "Aims to address concerns with convention violation.",
+                    "type-fac": "Aims to refactor a code element."
+                }
+            },
+            "new": {
+                "color": "#0e8a16",
+                "labels": {
+                    "type-feat": "Aims to implement an entirely new feature.",
+                    "type-imp": "Aims to improve something about an existing feature."
+                }
+            },
+            "docs": {
+                "color": "#1d76db",
+                "labels": {
+                    "type-docs": "Aims to address concerns with documentation."
+                }
+            }
+        },
+        "nextjs": {
+            "layers": {
+                "color": "#006b75",
+                "labels": {
+                    "lay-api": "Relates to the API layer.",
+                    "lay-page": "Relates to the pages layer."
+                }
+            }
+        },
+        "react": {
+            "layers": {
+                "color": "#006b75",
+                "labels": {
+                    "lay-comp": "Relates to the components layer.",
+                    "lay-req": "Relates to the requests layer."
+                }
+            }
+        },
+        "fastapi": {
+            "layers": {
+                "color": "#006b75",
+                "labels": {
+                    "lay-app": "Relates to the app layer.",
+                    "lay-db": "Relates to the database crud layer.",
+                    "lay-db-mig": "Relates to the database migrations system.",
+                    "lay-db-seed": "Relates to the database seed system.",
+                    "lay-bll": "Relates to the business logic layer.",
+                    "lay-ep-rest": "Relates to the REST API and endpoints layer.",
+                    "lay-ep-gql": "Relates to the GraphQL API and endpoints layer.",
+                    "lay-sdk": "Relates to the software development kit layer."
+                }
+            }
+        },
+        "framework": {
+            "domains": {
+                "color": "#006b75",
+                "labels": {
+                    "dom-auth": "Relates to the Auth domain (specifically).",
+                    "dom-ext": "Relates to the Extensions domain (specifically).",
+                    "dom-prov": "Relates to the Providers domain (specifically)."
+                }
+            },
+            "extensions": {
+                "color": "#006b75",
+                "labels": {
+                    "ext-auth-mfa": "Relates to the auth_mfa extension.",
+                    "ext-database": "Relates to the database extension.",
+                    "ext-email": "Relates to the email extension.",
+                    "ext-meta-logging": "Relates to the meta_logging extension.",
+                    "ext-payment": "Relates to the payment extension."
+                }
+            }
+        },
+        "agi": {
+            "extensions": {
+                "color": "#006b75",
+                "labels": {
+                    "ext-ai": "Relates to the ai extension.",
+                    "ext-ai-agents": "Relates to the ai_agents extension.",
+                    "ext-ai-prompts": "Relates to the ai_prompts extension.",
+                    "ext-ai-chains": "Relates to the ai_chains extension.",
+                    "ext-conversations": "Relates to the conversations extension."
+                }
+            }
+        },
+        "ngpt": {
+            "extensions": {
+                "color": "#006b75",
+                "labels": {
+                    "ext-ehr": "Relates to the ehr extension.",
+                    "ext-local-ehr": "Relates to the local_ehr extension."
+                }
+            }
+        }
+    },
+    "repositories": {
+        "JamesonRGrieve/ServerFramework": [
+            "fastapi, framework"
+        ],
+        "JamesonRGrieve/AGInYourPC": [
+            "fastapi"
+        ],
+        "JamesonRGrieve/AGInfrastructure": [
+            "fastapi, agi"
+        ],
+        "JamesonRGrieve/nursegpt": [
+            "fastapi, ngpt"
+        ],
+        "JamesonRGrieve/ClientFramework": [
+            "nextjs",
+            "react",
+            "framework"
+        ],
+        "JamesonRGrieve/AGInterface": [
+            "nextjs",
+            "react",
+            "agi"
+        ],
+        "JamesonRGrieve/nursegpt_web": [
+            "nextjs",
+            "react",
+            "ngpt"
+        ],
+        "JamesonRGrieve/aginteractive": [
+            "nextjs",
+            "react",
+            "agi"
+        ],
+        "JamesonRGrieve/agiteration": [
+            "nextjs",
+            "react",
+            "agi"
+        ],
+        "JamesonRGrieve/zod2gql": [
+            "react"
+        ],
+        "JamesonRGrieve/appwrapper": [
+            "react",
+            "agi"
+        ],
+        "JamesonRGrieve/dynamic-form": [
+            "react",
+            "agi"
+        ]
+    }
+}
