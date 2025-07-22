@@ -6,13 +6,10 @@ on:
       - main
       - dev
 
+permissions:
+  contents: write
+
 jobs:
   call-reusable-lint:
     name: Call Reusable Lint Workflow
-    uses: JamesonRGrieve/Workflows/.github/workflows/test-lint-py.yml@main
-    # No specific inputs needed for the reusable lint workflow
-    # Permissions are handled by the reusable workflow itself or should be inherited.
-    # If secrets were needed, they would be passed here like:
-    # secrets: inherit
-  permissions:
-  contents: write
+    uses: JamesonRGrieve/Workflows/.github/workflows/test-py-lint.yml@main
