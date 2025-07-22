@@ -711,11 +711,6 @@ jobs:
       regression_count: ${{ needs.perform-regression-analysis.outputs.regression_count }}
 
     steps:
-      - name: Install bc
-        run: |
-          apt-get update -y
-          apt-get install -y bc
-
       - name: Download test data artifacts
         uses: actions/download-artifact@v4
         with:
