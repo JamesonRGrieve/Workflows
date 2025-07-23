@@ -89,12 +89,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd src
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           fi
+          cd src
 
       - name: Check for test collection errors
         id: check-collection
