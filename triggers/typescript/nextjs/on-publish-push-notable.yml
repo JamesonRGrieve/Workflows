@@ -1,4 +1,4 @@
-name: Trigger GHCR Publish
+name: On Push or Publish Notable Branches
 
 on:
   push:

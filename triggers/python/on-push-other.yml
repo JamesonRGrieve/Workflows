@@ -1,11 +1,5 @@
 name: Lint Trigger
 
-on:
-  push:
-    branches-ignore:
-      - main
-      - dev
-
 permissions:
   contents: write
 

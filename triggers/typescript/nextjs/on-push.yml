@@ -1,4 +1,4 @@
-name: Trigger Submodule Management
+name: On Push
 
 on:
   push:
@@ -7,6 +7,9 @@ on:
       - dev
 
 jobs:
+  call-reusable-lint:
+    name: Call Reusable Lint Workflow
+    uses: JamesonRGrieve/Workflows/.github/workflows/test-ts-lint.yml@main
   call-manage-submodules:
     name: Call Reusable Submodule Management
     # Make sure the reusable workflow is in the same repository at this path
@@ -26,3 +29,11 @@ jobs:
     secrets: inherit # Ensures GITHUB_TOKEN and any other necessary secrets are passed
     # The reusable workflow `manage-submodules.yml` already defines its own permissions (contents: write).
     # If it didn't, you might need to specify them here.
+  call-reusable-build:
+    name: Call Reusable Build and Test Next.js
+    uses: JamesonRGrieve/Workflows/.github/workflows/build-next.yml@main # Path to the reusable workflow
+    with:
+      node-version: '20' # Optional: specify Node.js version, or omit to use default from reusable workflow
+    permissions:
+      contents: write # Required because the reusable workflow (specifically its lint job) needs it
+    secrets: inherit # If the reusable workflow needed secrets, they would be passed like this
