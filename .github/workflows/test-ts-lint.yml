@@ -261,7 +261,7 @@ jobs:
           echo "This workflow is failing intentionally to trigger a new run with formatted code."
           exit 1
 
-  # FIXME
+  # FIXME This needs to (1) work and also (2) test the build with the target branch's submodule branches.
   # analyze-regressions:
   #   name: Analyze Lint Regressions
   #   if: ${{ inputs.target_branch_to_compare != '' && (needs.lint-pr-branch.outputs.has_lint_errors == 'true' || inputs.fail_on_new_regressions_only == true) }}
