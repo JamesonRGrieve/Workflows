@@ -242,7 +242,7 @@ jobs:
             echo "No changes to commit"
             echo "pushed=false" >> $GITHUB_OUTPUT
           else
-            git commit -m "style: auto-format Python code with black"
+            git commit -m "style: auto-format TypeScript code with eslint"
 
             if [[ -n "$GITHUB_HEAD_REF" ]]; then
               # We're in a PR context, push to the source branch

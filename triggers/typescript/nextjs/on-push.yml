@@ -11,6 +11,9 @@ jobs:
   call-lint:
     name: Call Lint Workflow
     uses: JamesonRGrieve/Workflows/.github/workflows/test-ts-lint.yml@main
+    with:
+      lint_command: 'npm run lint'
+      fix_command: 'npm run lint-fix'
   call-manage-submodules:
     name: Call Submodule Management
     # Make sure the reusable workflow is in the same repository at this path
