@@ -6,4 +6,4 @@ permissions:
 jobs:
   call-reusable-lint:
     name: Call Reusable Lint Workflow
-    uses: JamesonRGrieve/Workflows/.github/workflows/test-py-lint.yml@main
+    uses: JamesonRGrieve/Workflows/.github/workflows/test-ts-lint.yml@main

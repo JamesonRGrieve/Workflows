@@ -14,7 +14,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
     name: Python Black Lint Check
     outputs:
       auto_formatted: ${{ steps.push-changes.outputs.pushed }}
