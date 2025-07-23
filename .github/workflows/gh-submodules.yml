@@ -104,7 +104,7 @@ jobs:
             
             cd "$GITHUB_WORKSPACE"
           done < submodules.txt
-
+          rm submodules.txt
           if [ "$CHANGES_MADE" = true ]; then
             if ! git diff --quiet; then
               git add -A
