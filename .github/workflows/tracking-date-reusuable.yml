@@ -35,8 +35,8 @@ jobs:
 
               const issue_number = issue.number;
               const labels = issue.labels.map(label => label.name);
-              const startDateComment = `🕒 **Start Date:** ${now}`;
-              const completeDateComment = `✅ **Completion Date:** ${now}`;
+              const startDateComment = ` **Start Date:** ${now}`;
+              const completeDateComment = ` **Completion Date:** ${now}`;
 
               const comments = await github.rest.issues.listComments({
                 owner,
@@ -51,7 +51,7 @@ jobs:
                   c.user?.login === "github-actions[bot]"
                 );
 
-              // 🕒 Add Start Date if labeled "In Progress"
+              //  Add Start Date if labeled "In Progress"
               if (labels.includes("In Progress") && !alreadyHasComment(startDateComment)) {
                 await github.rest.issues.createComment({
                   owner,
@@ -59,10 +59,10 @@ jobs:
                   issue_number,
                   body: startDateComment
                 });
-                console.log(`✅ Start Date set on issue #${issue_number}`);
+                console.log(` Start Date set on issue #${issue_number}`);
               }
 
-              // ✅ Add Completion Date if labeled "Complete" and issue is closed
+              //  Add Completion Date if labeled "Complete" and issue is closed
               if (
                 issue.state === "closed" && !alreadyHasComment(completeDateComment)
               ) {
@@ -72,8 +72,8 @@ jobs:
                   issue_number,
                   body: completeDateComment
                 });
-                console.log(`✅ Completion Date set on issue #${issue_number}`);
+                console.log(`Completion Date set on issue #${issue_number}`);
               }
             }
 
-            console.log("🎉 Finished processing all issues.");
+            console.log(" Finished processing all issues.");

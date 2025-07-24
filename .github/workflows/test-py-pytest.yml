@@ -94,7 +94,7 @@ jobs:
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           fi
-
+      
       - name: Check for test collection errors
         id: check-collection
         run: |
@@ -384,6 +384,37 @@ jobs:
             pr_results.json
           retention-days: 3
           if-no-files-found: ignore
+
+      - name: Run Pytest
+        id: pytest
+        run: |
+          pytest
+        continue-on-error: true  # Allow next steps to run even if tests fail
+
+      - name: Label PR - Passed
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-passed
+
+      - name: Remove Failed Label if Present
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Label PR - Failed
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Remove Passed Label if Present
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-passed
+
 
   test-target-branch:
     runs-on: ${{ inputs.runs_on }}

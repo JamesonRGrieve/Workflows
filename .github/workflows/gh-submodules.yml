@@ -1,4 +1,5 @@
 name: Submodule Management
+
 on:
   workflow_call:
     inputs:
@@ -216,3 +217,33 @@ jobs:
           else
             echo "No changes required for .gitmodules configuration."
           fi
+
+      - name: Run Pytest
+        id: pytest
+        run: |
+          pytest || echo "Tests failed"
+        continue-on-error: true  
+
+      - name: Label PR - Passed
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-passed
+
+      - name: Remove Failed Label if Present
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Label PR - Failed
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Remove Passed Label if Present
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-passed

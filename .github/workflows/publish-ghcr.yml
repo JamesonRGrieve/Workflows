@@ -148,3 +148,33 @@ jobs:
           build-args: ${{ steps.check_landing.outputs.landing_build_args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Run Pytest
+        id: pytest
+        run: |
+          pytest || echo "Tests failed"
+        continue-on-error: true  
+
+      - name: Label PR - Passed
+        if: steps.pytest.outcome == 'success' && github.event_name == 'pull_request'
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-passed
+
+      - name: Remove Failed Label if Present
+        if: steps.pytest.outcome == 'success' && github.event_name == 'pull_request'
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Label PR - Failed
+        if: steps.pytest.outcome != 'success' && github.event_name == 'pull_request'
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Remove Passed Label if Present
+        if: steps.pytest.outcome != 'success' && github.event_name == 'pull_request'
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-passed
