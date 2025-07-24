@@ -3,27 +3,24 @@ name: Submodule Management
 on:
   workflow_call:
     inputs:
-      file_paths:
-        description: "List of relative file paths to synchronize with submodules"
-        required: true
+      fallback_branch:
+        description: "Branch to use when current branch doesn't exist in submodule"
+        required: false
         type: string
+        default: "dev"
       ignore_submodules:
         description: "Comma-separated list of submodules to ignore"
         required: false
         type: string
         default: ""
-      commit_message:
-        description: "Custom commit message for submodule changes"
-        required: false
-        type: string
-        default: "sync: update files from main repository"
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
+
 jobs:
   manage-submodules:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runs_on }}
     name: Manage Submodules
     permissions:
       contents: write
@@ -46,17 +43,18 @@ jobs:
           git config --global user.name "actions-user"
           git config --global user.email "actions-user@users.noreply.github.com"
 
-      - name: Manage submodules on main branch
-        if: steps.get-branch.outputs.branch == 'main'
+      - name: Synchronize submodule branches
         run: |
-          # Get list of submodules
+          CURRENT_BRANCH="${{ steps.get-branch.outputs.branch }}"
+          FALLBACK_BRANCH="${{ inputs.fallback_branch }}"
+
           git submodule foreach --quiet 'echo $name' > submodules.txt
 
-          # Convert ignore submodules to array
           IFS=',' read -ra IGNORE_SUBMODULES <<< "${{ inputs.ignore_submodules }}"
 
+          CHANGES_MADE=false
+
           while IFS= read -r submodule; do
-            # Check if submodule should be ignored
             SKIP=false
             for ignore in "${IGNORE_SUBMODULES[@]}"; do
               ignore=$(echo "$ignore" | xargs)
@@ -71,151 +69,49 @@ jobs:
               continue
             fi
             
-            echo "Managing submodule: $submodule"
+            echo "Processing submodule: $submodule"
             
-            # Navigate to submodule
             cd "$submodule"
             
-            # Check if current branch is main, if not switch to main
-            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-            if [ "$CURRENT_BRANCH" != "main" ]; then
-              git checkout main
-            fi
+            git fetch origin
             
-            # Update submodule to latest main
-            git pull origin main
+            TARGET_BRANCH=""
             
-            # Return to root
-            cd $GITHUB_WORKSPACE
-          done < submodules.txt
-
-      - name: Manage submodules on non-main branch
-        if: steps.get-branch.outputs.branch != 'main'
-        run: |
-          # Get list of submodules
-          git submodule foreach --quiet 'echo $name' > submodules.txt
-
-          # Convert input file paths to array
-          IFS=',' read -ra FILE_PATHS <<< "${{ inputs.file_paths }}"
-
-          # Convert ignore submodules to array
-          IFS=',' read -ra IGNORE_SUBMODULES <<< "${{ inputs.ignore_submodules }}"
-
-          while IFS= read -r submodule; do
-            # Check if submodule should be ignored
-            SKIP=false
-            for ignore in "${IGNORE_SUBMODULES[@]}"; do
-              ignore=$(echo "$ignore" | xargs)
-              if [ "$ignore" == "$submodule" ]; then
-                echo "Skipping ignored submodule: $submodule"
-                SKIP=true
-                break
-              fi
-            done
-            
-            if [ "$SKIP" = true ]; then
-              continue
-            fi
-            
-            echo "Managing submodule: $submodule"
-            
-            # Navigate to submodule
-            cd "$submodule"
-            
-            # Check if dev branch exists, create if not
-            if ! git show-ref --verify --quiet refs/heads/dev; then
-              # Check if origin has dev branch
-              if git ls-remote --exit-code --heads origin dev; then
-                git checkout dev
+            if git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1; then
+              echo "  Branch '$CURRENT_BRANCH' exists in $submodule"
+              TARGET_BRANCH="$CURRENT_BRANCH"
+            else
+              echo "  Branch '$CURRENT_BRANCH' does not exist in $submodule, using fallback '$FALLBACK_BRANCH'"
+              if git ls-remote --exit-code --heads origin "$FALLBACK_BRANCH" >/dev/null 2>&1; then
+                TARGET_BRANCH="$FALLBACK_BRANCH"
               else
-                # Create dev branch based on main
-                git checkout -b dev
+                echo "  ERROR: Neither '$CURRENT_BRANCH' nor fallback '$FALLBACK_BRANCH' exist in $submodule"
+                cd "$GITHUB_WORKSPACE"
+                continue
               fi
-            else
-              # Switch to dev branch
-              git checkout dev
             fi
             
-            # Check and update each file
-            CHANGES_MADE=false
-            for file_path in "${FILE_PATHS[@]}"; do
-              # Trim whitespace
-              file_path=$(echo "$file_path" | xargs)
-              
-              if [ -f "$GITHUB_WORKSPACE/$file_path" ] && [ -f "$file_path" ]; then
-                # Compare files
-                if ! cmp -s "$GITHUB_WORKSPACE/$file_path" "$file_path"; then
-                  echo "Updating $file_path in $submodule"
-                  mkdir -p $(dirname "$file_path")
-                  cp "$GITHUB_WORKSPACE/$file_path" "$file_path"
-                  CHANGES_MADE=true
-                fi
+            CURRENT_SUB_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            if [ "$CURRENT_SUB_BRANCH" != "$TARGET_BRANCH" ]; then
+              if git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
+                git checkout "$TARGET_BRANCH"
+              else
+                git checkout -b "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
               fi
-            done
+              CHANGES_MADE=true
+            fi
             
-            # Commit and push changes if any
-            if [ "$CHANGES_MADE" = true ]; then
+            git pull origin "$TARGET_BRANCH"
+            
+            cd "$GITHUB_WORKSPACE"
+          done < submodules.txt
+          rm submodules.txt
+          if [ "$CHANGES_MADE" = true ]; then
+            if ! git diff --quiet; then
               git add -A
-              git commit -m "${{ inputs.commit_message }}"
-              git push origin dev
-            fi
-            
-            # Return to root
-            cd $GITHUB_WORKSPACE
-          done < submodules.txt
-
-      - name: Ensure submodules point to correct branches
-        run: |
-          TARGET_BRANCH=${{ steps.get-branch.outputs.branch == 'main' && 'main' || 'dev' }}
-
-          # Get list of submodules
-          git submodule foreach --quiet 'echo $name' > submodules.txt
-
-          # Convert ignore submodules to array
-          IFS=',' read -ra IGNORE_SUBMODULES <<< "${{ inputs.ignore_submodules }}"
-
-          SUBMODULE_CONFIG_CHANGED=false
-          while IFS= read -r submodule; do
-            # Check if submodule should be ignored
-            SKIP=false
-            for ignore in "${IGNORE_SUBMODULES[@]}"; do
-              ignore=$(echo "$ignore" | xargs)
-              if [ "$ignore" == "$submodule" ]; then
-                echo "Skipping ignored submodule for .gitmodules update: $submodule"
-                SKIP=true
-                break
-              fi
-            done
-            
-            if [ "$SKIP" = true ]; then
-              continue
-            fi
-            
-            # Get current branch setting in .gitmodules for this submodule
-            CURRENT_CONFIG_BRANCH=$(git config -f .gitmodules submodule.$submodule.branch || echo "")
-
-            if [ "$CURRENT_CONFIG_BRANCH" != "$TARGET_BRANCH" ]; then
-              echo "Updating .gitmodules for submodule '$submodule' to track branch '$TARGET_BRANCH' (was '$CURRENT_CONFIG_BRANCH')"
-              git config -f .gitmodules submodule.$submodule.branch $TARGET_BRANCH
-              SUBMODULE_CONFIG_CHANGED=true
-            else
-              echo "Submodule '$submodule' in .gitmodules already configured to track branch '$TARGET_BRANCH'"
-            fi
-          done < submodules.txt
-
-          # Commit the .gitmodules changes if any actual changes were made by git config
-          if [ "$SUBMODULE_CONFIG_CHANGED" = true ]; then
-            # Check if git status shows .gitmodules as modified
-            if git diff --quiet .gitmodules; then
-              echo ".gitmodules was updated by \`git config\` but \`git diff\` shows no changes. This is unexpected. Skipping commit."
-            else
-              echo ".gitmodules was modified, committing changes to point submodules to $TARGET_BRANCH branch..."
-              git add .gitmodules
-              git commit -m "chore: update submodules to track $TARGET_BRANCH branch"
+              git commit -m "chore: update submodule references"
               git push
             fi
-          else
-            echo "No changes required for .gitmodules configuration."
           fi
 
       - name: Run Pytest

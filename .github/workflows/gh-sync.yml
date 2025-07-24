@@ -6,7 +6,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
       fail_on_error:
         description: "If true, the job will fail if sync operation fails."
         required: false

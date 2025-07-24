@@ -2,11 +2,11 @@ name: Reusable - Set Q/A Status in Zephyrex Board
 
 on:
   workflow_call:
-   
+
 jobs:
   qa-update-status:
     name: Set QA Status on Project Item using Project v2 QA Status Field
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       issues: write
       contents: read

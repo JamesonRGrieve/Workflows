@@ -21,7 +21,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
     secrets:
       TWINE_USERNAME:
         description: "Twine username (usually __token__ for API tokens)"

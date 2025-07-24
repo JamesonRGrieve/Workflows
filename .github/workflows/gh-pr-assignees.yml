@@ -20,7 +20,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
     secrets:
       gh_token:
         description: "GitHub token with permissions to read repo data and write to PRs (assign users)."

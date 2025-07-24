@@ -11,13 +11,15 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
 jobs:
   lint:
-    uses: ./.github/workflows/test-py-lint.yml
+    uses: ./.github/workflows/test-ts-lint.yml
     permissions:
       contents: write
-
+    with:
+      lint_command: "npm run lint"
+      fix_command: "npm run lint-fix"
   build-baremetal:
     runs-on: ${{ inputs.runs_on }}
     name: Build / Baremetal

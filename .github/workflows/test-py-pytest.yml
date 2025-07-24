@@ -20,7 +20,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "self-hosted"
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "Discord Webhook URL for failure notifications. If not provided, notifications are skipped."
@@ -94,7 +94,7 @@ jobs:
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           fi
-      
+
       - name: Check for test collection errors
         id: check-collection
         run: |
@@ -448,6 +448,7 @@ jobs:
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           fi
+          cd src
 
       - name: Check for test collection errors
         id: check-collection
@@ -740,11 +741,6 @@ jobs:
       regression_count: ${{ needs.perform-regression-analysis.outputs.regression_count }}
 
     steps:
-      - name: Install bc
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y bc
-
       - name: Download test data artifacts
         uses: actions/download-artifact@v4
         with:
