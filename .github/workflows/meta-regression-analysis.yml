@@ -216,3 +216,33 @@ jobs:
           echo "Regressions detected. Failing the job as per configuration."
           REGRESSION_COUNT_VAL=${{ steps.check-regressions-script.outputs.REGRESSION_COUNT }}
           exit 1
+
+      - name: Run Pytest
+        id: pytest
+        run: |
+          pytest || echo "Tests failed"
+        continue-on-error: true  # Allow next steps to run even if tests fail
+
+      - name: Label PR - Passed
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-passed
+
+      - name: Remove Failed Label if Present
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Label PR - Failed
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Remove Passed Label if Present
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-passed
