@@ -44,7 +44,7 @@ jobs:
       # Step 4: Run Bandit and output results to a file
       - name: Run Bandit on PR Branch
         run: |
-          bandit -r . -f json -o pr_bandit_output.json || true
+          bandit -r . -lll -f json -o pr_bandit_output.json || true
 
       # Step 5: Upload the results as a GitHub Actions artifact (for debugging or reporting)
       - name: Upload PR Artifact
@@ -87,7 +87,7 @@ jobs:
       # Step 4: Run Bandit and save output
       - name: Run Bandit on Target Branch
         run: |
-          bandit -r . -f json -o target_bandit_output.json || true
+          bandit -r . -lll -f json -o target_bandit_output.json || true
 
       # Step 5: Upload results from the target branch
       - name: Upload Target Artifact
