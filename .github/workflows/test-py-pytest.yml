@@ -182,7 +182,11 @@ jobs:
         run: |
           echo "Running tests on PR branch..."
           python -m pytest -vv --json-report --json-report-file=pr_results.json --tb=short > test_output.txt 2>&1 || true
-
+            cat test_output.txt
+            if [ $? -ne 0 ]; then
+              echo "::error:: Pytest failed"
+              exit 1
+            fi
           if [ -f pr_results.json ]; then
             echo "✅ Test execution completed"
           else
