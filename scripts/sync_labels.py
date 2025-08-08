@@ -25,7 +25,7 @@ def get_labels(repo):
     res = requests.get(url, headers=HEADERS)
     if res.status_code == 200:
         return res.json()
-    print(f"❌ Failed to fetch labels from {repo}")
+    print(f" Failed to fetch labels from {repo}")
     return []
 
 def create_or_update_label(repo, label):
@@ -36,11 +36,11 @@ def create_or_update_label(repo, label):
         "description": label.get("description", "")
     })
     if res.status_code == 422 and "already_exists" in str(res.text):
-        print(f"Label '{label['name']}' already exists in {repo}")
+        print(f" Label '{label['name']}' already exists in {repo}")
     elif res.status_code != 201:
-        print(f"Failed to create label '{label['name']}' in {repo}")
+        print(f" Failed to create label '{label['name']}' in {repo}")
     else:
-        print(f"Synced label '{label['name']}' to {repo}")
+        print(f" Synced label '{label['name']}' to {repo}")
 
 def sync_labels():
     labels = get_labels(SOURCE_REPO)
