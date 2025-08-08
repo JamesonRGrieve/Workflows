@@ -87,7 +87,11 @@ jobs:
       # Step 4: Run Bandit and save output
       - name: Run Bandit on Target Branch
         run: |
+<<<<<<< HEAD
           bandit -r . -lll -f json -o target_bandit_output.json || true
+=======
+          bandit -r . -f json -o target_bandit_output.json || true
+>>>>>>> b6c4be9 (added bandit reusable code and trigger)
 
       # Step 5: Upload results from the target branch
       - name: Upload Target Artifact
