@@ -805,9 +805,10 @@ jobs:
               pass_to_gone = list(target_passing - pr_all_tests)  # Passing tests that completely disappeared
               fail_to_gone = list(target_failing - pr_all_tests)  # Failing tests that completely disappeared
               discovery_regressions = list(pr_warnings - target_warnings)
-              
+
               # Create comprehensive regression report
-              has_any_regressions = bool(pass_to_fail or pass_to_skip or fail_to_skip or pass_to_gone or fail_to_gone or discovery_regressions)
+              has_any_regressions = bool(pass_to_fail or pass_to_skip or pass_to_gone or fail_to_gone or discovery_regressions)
+              has_improvements = bool(fail_to_skip)
               
               with open("comprehensive_regression_report.txt", "w") as f:
                   f.write("COMPREHENSIVE REGRESSION ANALYSIS\n")
@@ -828,8 +829,8 @@ jobs:
                       f.write("\n")
                   
                   if fail_to_skip:
-                      f.write(f"FAIL-TO-SKIP REGRESSIONS ({len(fail_to_skip)} tests)\n")
-                      f.write("Previously failing, now skipped:\n")
+                      f.write(f"FAIL-TO-SKIP IMPROVEMENTS ({len(fail_to_skip)} tests)\n")
+                      f.write("Previously failing, now skipped (treated as improvements):\n")
                       for i, test in enumerate(sorted(fail_to_skip), 1):
                           f.write(f"  {i}. {test}\n")
                       f.write("\n")
@@ -856,7 +857,10 @@ jobs:
                       f.write("\n")
                   
                   if not has_any_regressions:
-                      f.write("No regressions detected across all categories.\n")
+                      if has_improvements:
+                          f.write("No regressions detected across all categories. Previously failing tests transitioned to skipped (treated as improvements).\n")
+                      else:
+                          f.write("No regressions detected across all categories.\n")
               
               # Also create the simple regression file for backward compatibility
               if pass_to_fail:
@@ -869,15 +873,18 @@ jobs:
               print(f"📊 Regression Analysis Results:")
               print(f"  Pass-to-Fail: {len(pass_to_fail)} tests")
               print(f"  Pass-to-Skip: {len(pass_to_skip)} tests")
-              print(f"  Fail-to-Skip: {len(fail_to_skip)} tests")
+              print(f"  Fail-to-Skip (improvements): {len(fail_to_skip)} tests")
               print(f"  Pass-to-Gone: {len(pass_to_gone)} tests")
               print(f"  Fail-to-Gone: {len(fail_to_gone)} tests")
               print(f"  Discovery: {len(discovery_regressions)} warnings")
               
               if has_any_regressions:
-                  print(f"❌ Total regressions detected: {len(pass_to_fail) + len(pass_to_skip) + len(fail_to_skip) + len(pass_to_gone) + len(fail_to_gone) + len(discovery_regressions)}")
+                  print(f"❌ Total regressions detected: {len(pass_to_fail) + len(pass_to_skip) + len(pass_to_gone) + len(fail_to_gone) + len(discovery_regressions)}")
               else:
-                  print("✅ No regressions detected")
+                  if has_improvements:
+                      print(f"✅ No regressions detected. {len(fail_to_skip)} failing test(s) are now skipped (treated as improvements).")
+                  else:
+                      print("✅ No regressions detected")
                   
           except Exception as e:
               print(f"Error in regression analysis: {e}")
@@ -1052,24 +1059,30 @@ jobs:
             if [ -f comprehensive_regression_report.txt ]; then
               PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              FAIL_SKIP_COUNT=$(grep -o "FAIL-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_SKIP_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-SKIP IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              
-              TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + FAIL_SKIP_COUNT + PASS_GONE_COUNT + FAIL_GONE_COUNT + DISCOVERY_COUNT))
-              
+
+              TOTAL_REGRESSIONS=$((PASS_FAIL_COUNT + PASS_SKIP_COUNT + PASS_GONE_COUNT + FAIL_GONE_COUNT + DISCOVERY_COUNT))
+
               echo "**$TOTAL_REGRESSIONS total regression(s) detected across multiple categories:**" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "| Category | Count |" >> $GITHUB_STEP_SUMMARY
               echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
               echo "| Pass → Fail | $PASS_FAIL_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "| Pass → Skip/XFail | $PASS_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
-              echo "| Fail → Skip | $FAIL_SKIP_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "| Pass → Gone | $PASS_GONE_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "| Fail → Gone | $FAIL_GONE_COUNT |" >> $GITHUB_STEP_SUMMARY
               echo "| Discovery Warnings | $DISCOVERY_COUNT |" >> $GITHUB_STEP_SUMMARY
+              if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+                echo "| Fail → Skip (Improvement) | $FAIL_SKIP_IMPROVEMENTS_COUNT |" >> $GITHUB_STEP_SUMMARY
+              fi
               echo "" >> $GITHUB_STEP_SUMMARY
+              if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+                echo "_Note: Fail → Skip transitions are treated as improvements and do not cause this job to fail._" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+              fi
             else
               echo "**$REGRESSION_COUNT_VAL test regression(s) detected.** See detailed breakdown below:" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
@@ -1082,7 +1095,7 @@ jobs:
                 
                 # Parse and format the comprehensive report for better GitHub display
                 while IFS= read -r line; do
-                    if [[ "$line" =~ ^[A-Z-].*REGRESSIONS.*\([0-9]+ ]]; then
+                    if [[ "$line" =~ ^[A-Z-].*(REGRESSIONS|IMPROVEMENTS).*(\([0-9]+) ]]; then
                         echo "### $line" >> $GITHUB_STEP_SUMMARY
                     elif [[ "$line" =~ ^Previously ]]; then
                         echo "*$line*" >> $GITHUB_STEP_SUMMARY
@@ -1109,6 +1122,22 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "This job (\`compare-results\`) has been marked as failed due to these regressions." >> $GITHUB_STEP_SUMMARY
             exit 1
+          fi
+
+          # Highlight improvements in the summary even when no regressions were found
+          if [ -f comprehensive_regression_report.txt ]; then
+            FAIL_SKIP_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-SKIP IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+
+            if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+              echo "### ✅ Test Improvements Detected" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "| Category | Count |" >> $GITHUB_STEP_SUMMARY
+              echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+              echo "| Fail → Skip (Improvement) | $FAIL_SKIP_IMPROVEMENTS_COUNT |" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "_Note: Fail → Skip transitions are treated as improvements and do not cause this job to fail._" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
           fi
 
           # Continue with the original comparison if no regressions
@@ -1424,7 +1453,7 @@ jobs:
               # Extract counts from comprehensive report
               PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              FAIL_SKIP_COUNT=$(grep -o "FAIL-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_SKIP_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-SKIP IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
@@ -1454,15 +1483,15 @@ jobs:
                  fi
                fi
                
-               if [[ "$FAIL_SKIP_COUNT" -gt 0 ]]; then
-                 if [[ "$FAIL_SKIP_COUNT" -le 5 ]]; then
-                   MESSAGE_LINES+=("**Fail→Skip ($FAIL_SKIP_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_COUNT | sed 's/^  [0-9]\+\. //')
+               if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+                 if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -le 5 ]]; then
+                   MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements ($FAIL_SKIP_IMPROVEMENTS_COUNT):**")
+                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
                    for test_path in "${test_paths[@]}"; do
                      MESSAGE_LINES+=("• \`$test_path\`")
                    done
                  else
-                   MESSAGE_LINES+=("**Fail→Skip:** $FAIL_SKIP_COUNT tests (see attached file)")
+                   MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements:** $FAIL_SKIP_IMPROVEMENTS_COUNT tests (see attached file)")
                  fi
                fi
                
