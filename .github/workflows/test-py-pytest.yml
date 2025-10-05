@@ -94,7 +94,6 @@ jobs:
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           fi
-          cd src
 
       - name: Check for test collection errors
         id: check-collection
@@ -183,7 +182,11 @@ jobs:
         run: |
           echo "Running tests on PR branch..."
           python -m pytest -vv --json-report --json-report-file=pr_results.json --tb=short > test_output.txt 2>&1 || true
-
+            cat test_output.txt
+            if [ $? -ne 0 ]; then
+              echo "::error:: Pytest failed"
+              exit 1
+            fi
           if [ -f pr_results.json ]; then
             echo "✅ Test execution completed"
           else
@@ -385,6 +388,37 @@ jobs:
             pr_results.json
           retention-days: 3
           if-no-files-found: ignore
+
+      - name: Run Pytest
+        id: pytest
+        run: |
+          pytest
+        continue-on-error: true  # Allow next steps to run even if tests fail
+
+      - name: Label PR - Passed
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-passed
+
+      - name: Remove Failed Label if Present
+        if: ${{ success() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Label PR - Failed
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Remove Passed Label if Present
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-passed
+
 
   test-target-branch:
     runs-on: ${{ inputs.runs_on }}

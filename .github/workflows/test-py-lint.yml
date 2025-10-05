@@ -79,3 +79,33 @@ jobs:
           echo "Code was auto-formatted. A new commit has been pushed with the changes."
           echo "This workflow is failing intentionally to trigger a new run with formatted code."
           exit 1
+
+      - name: Run Pytest
+        id: pytest
+        run: |
+          pytest
+        continue-on-error: true
+
+      - name: Label PR - Passed
+        if: ${{ steps.pytest.outcome == 'success' && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-passed
+
+      - name: Remove Failed Label if Present
+        if: ${{ steps.pytest.outcome == 'success' && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Label PR - Failed
+        if: ${{ steps.pytest.outcome == 'failure' && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          labels: unit-test-failed
+
+      - name: Remove Passed Label if Present
+        if: ${{ steps.pytest.outcome == 'failure' && github.event_name == 'pull_request' }}
+        uses: actions-ecosystem/action-remove-labels@v1
+        with:
+          labels: unit-test-passed
