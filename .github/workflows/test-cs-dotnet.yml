@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: "."
+      pre_run_commands:
+        description: "Optional shell commands to execute in the working directory before tests run."
+        required: false
+        type: string
+        default: ""
       ping_latest_committer:
         description: "If true, the latest committer on the PR will be added to the ping list."
         required: false
@@ -110,6 +115,10 @@ jobs:
         run: |
           echo "Restoring dotnet dependencies..."
           dotnet restore
+
+      - name: Run pre-test commands
+        if: ${{ inputs.pre_run_commands != '' }}
+        run: ${{ inputs.pre_run_commands }}
 
       - name: Check for test discovery issues
         id: check-collection
@@ -388,9 +397,9 @@ jobs:
         with:
           name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            pr_test_data.json
-            test_output.txt
-            pr_results.json
+            ${{ inputs.working-directory }}/pr_test_data.json
+            ${{ inputs.working-directory }}/test_output.txt
+            ${{ inputs.working-directory }}/pr_results.json
           retention-days: 3
           if-no-files-found: ignore
 
@@ -691,9 +700,9 @@ jobs:
         with:
           name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            target_test_data.json
-            target_test_output.txt
-            target_results.json
+            ${{ inputs.working-directory }}/target_test_data.json
+            ${{ inputs.working-directory }}/target_test_output.txt
+            ${{ inputs.working-directory }}/target_results.json
           retention-days: 3
           if-no-files-found: ignore
 

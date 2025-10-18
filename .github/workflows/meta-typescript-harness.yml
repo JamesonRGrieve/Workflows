@@ -1,0 +1,43 @@
+name: Meta Test TypeScript Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Branch to compare against when rehearsing lint regressions"
+        required: false
+        default: "refs/heads/main"
+      simulate_regression:
+        description: "Also run a job that injects a lint failure to exercise regression detection"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  ts-baseline:
+    name: TypeScript reusable workflow (baseline)
+    uses: ./.github/workflows/test-ts-lint.yml
+    with:
+      runs_on: ubuntu-latest
+      node-version: "18"
+      target_branch_to_compare: ${{ inputs.target_branch }}
+      lint_command: npx eslint "src/**/*.ts"
+      fix_command: npx eslint "src/**/*.ts" --fix
+      project_path: meta_testing/projects/typescript/sample_app
+      pre_run_commands: npm install --package-lock-only
+
+  ts-regression:
+    if: ${{ inputs.simulate_regression }}
+    needs: ts-baseline
+    name: TypeScript reusable workflow (forced regression)
+    uses: ./.github/workflows/test-ts-lint.yml
+    with:
+      runs_on: ubuntu-latest
+      node-version: "18"
+      target_branch_to_compare: ${{ inputs.target_branch }}
+      lint_command: npx eslint "src/**/*.ts"
+      fix_command: npx eslint "src/**/*.ts" --fix
+      project_path: meta_testing/projects/typescript/sample_app
+      pre_run_commands: |
+        npm install --package-lock-only
+        node ../../../scripts/typescript/introduce_lint_failure.js src/index.ts

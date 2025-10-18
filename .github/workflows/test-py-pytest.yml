@@ -12,6 +12,16 @@ on:
         required: false
         type: string
         default: "3.10"
+      project_path:
+        description: "Directory that contains the Python project under test."
+        required: false
+        type: string
+        default: "."
+      pre_run_commands:
+        description: "Optional shell commands to execute in the project directory before tests are collected or executed."
+        required: false
+        type: string
+        default: ""
       ping_latest_committer:
         description: "If true, the latest committer on the PR will be added to the ping list."
         required: false
@@ -63,6 +73,10 @@ on:
 jobs:
   test-source-branch:
     runs-on: ${{ inputs.runs_on }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.project_path }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
       passed: ${{ steps.extract-results.outputs.passed }}
@@ -91,10 +105,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
-          if [ -f requirements.txt ]; then 
+          if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
-          cd src
+
+      - name: Run pre-test commands
+        if: ${{ inputs.pre_run_commands != '' }}
+        run: ${{ inputs.pre_run_commands }}
 
       - name: Check for test collection errors
         id: check-collection
@@ -380,14 +397,18 @@ jobs:
         with:
           name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            pr_test_data.json
-            test_output.txt
-            pr_results.json
+            ${{ inputs.project_path }}/pr_test_data.json
+            ${{ inputs.project_path }}/test_output.txt
+            ${{ inputs.project_path }}/pr_results.json
           retention-days: 3
           if-no-files-found: ignore
 
   test-target-branch:
     runs-on: ${{ inputs.runs_on }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.project_path }}
     outputs:
       total: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.total || steps.extract-results.outputs.total }}
       passed: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passed || steps.extract-results.outputs.passed }}
@@ -415,10 +436,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-json-report pytest-asyncio
-          if [ -f requirements.txt ]; then 
+          if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
-          cd src
 
       - name: Check for test collection errors
         id: check-collection
@@ -686,9 +706,9 @@ jobs:
         with:
           name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            target_test_data.json
-            target_test_output.txt
-            target_results.json
+            ${{ inputs.project_path }}/target_test_data.json
+            ${{ inputs.project_path }}/target_test_output.txt
+            ${{ inputs.project_path }}/target_results.json
           retention-days: 3
           if-no-files-found: ignore
 

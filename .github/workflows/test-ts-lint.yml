@@ -21,6 +21,16 @@ on:
         description: "The exact command to run for auto-fixing lint issues (e.g., npm run lint:eslint -- --fix)"
         required: true
         type: string
+      project_path:
+        description: "Directory that contains the TypeScript project to lint."
+        required: false
+        type: string
+        default: "."
+      pre_run_commands:
+        description: "Optional shell commands to execute in the project directory before linting."
+        required: false
+        type: string
+        default: ""
       fail_on_new_regressions_only:
         description: "If true, only fail if new regressions are found compared to target branch. If false, fail on any lint error in PR."
         required: false
@@ -56,6 +66,10 @@ jobs:
     if: ${{ inputs.target_branch_to_compare != '' }}
     name: Lint Target Branch
     runs-on: ${{ inputs.runs_on }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.project_path }}
     outputs:
       clean_files_json: ${{ steps.extract-clean-files.outputs.CLEAN_FILES_JSON }}
     steps:
@@ -75,6 +89,10 @@ jobs:
         run: |
           echo "Installing dependencies for target branch..."
           npm ci # Or yarn install --frozen-lockfile
+
+      - name: Run pre-lint commands
+        if: ${{ inputs.pre_run_commands != '' }}
+        run: ${{ inputs.pre_run_commands }}
 
       - name: Run Linter (Target Branch)
         id: lint-target
@@ -116,7 +134,7 @@ jobs:
               # Find all .ts and .tsx files and format as JSON array
               # Note: this doesn't respect .eslintignore or other linter-specific ignore files directly
               # A better approach is to use the linter's own file processing capabilities.
-              ALL_FILES=$(find . -type f \( -name "*.ts" -o -name "*.tsx" \) -not -path "./node_modules/*" -print0 | xargs -0 realpath --relative-to=. | jq -R . | jq -s .)
+          ALL_FILES=$(find . -type f \( -name "*.ts" -o -name "*.tsx" \) -not -path "./node_modules/*" -print0 | xargs -0 realpath --relative-to=. | jq -R . | jq -s .)
               if [ -n "$ALL_FILES" ] && [ "$ALL_FILES" != "null" ]; then
                 CLEAN_FILES_LIST=$ALL_FILES
               else
@@ -137,6 +155,10 @@ jobs:
   lint-pr-branch:
     name: Lint PR Branch & Attempt Fixes
     runs-on: ${{ inputs.runs_on }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.project_path }}
     outputs:
       lint_errors_json: ${{ steps.extract-errors-pr.outputs.LINT_ERRORS_JSON }}
       has_lint_errors: ${{ steps.check-errors-pr.outputs.HAS_LINT_ERRORS }}
@@ -158,6 +180,10 @@ jobs:
         run: |
           echo "Installing dependencies for PR branch..."
           npm ci
+
+      - name: Run pre-lint commands
+        if: ${{ inputs.pre_run_commands != '' }}
+        run: ${{ inputs.pre_run_commands }}
 
       - name: Run Linter & Attempt Auto-fix (PR Branch)
         id: lint-fix-pr

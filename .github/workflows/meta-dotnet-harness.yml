@@ -1,0 +1,49 @@
+name: Meta Test Dotnet Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Branch to compare against when rehearsing regressions"
+        required: false
+        default: "refs/heads/main"
+      simulate_regression:
+        description: "Also run a job that injects a failing test to exercise regression detection"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  dotnet-baseline:
+    name: Dotnet reusable workflow (baseline)
+    uses: ./.github/workflows/test-cs-dotnet.yml
+    with:
+      runs_on: ubuntu-latest
+      dotnet-version: "8.0.x"
+      target_branch_to_compare: ${{ inputs.target_branch }}
+      working-directory: meta_testing/projects/dotnet
+
+  dotnet-regression:
+    if: ${{ inputs.simulate_regression }}
+    needs: dotnet-baseline
+    name: Dotnet reusable workflow (forced regression)
+    uses: ./.github/workflows/test-cs-dotnet.yml
+    with:
+      runs_on: ubuntu-latest
+      dotnet-version: "8.0.x"
+      target_branch_to_compare: ${{ inputs.target_branch }}
+      working-directory: meta_testing/projects/dotnet
+      pre_run_commands: python ../../scripts/dotnet/introduce_failure.py SampleApp.Tests/CalculatorTests.cs
+
+  analyze-dotnet-regression:
+    if: ${{ inputs.simulate_regression }}
+    needs: dotnet-regression
+    name: Meta regression analysis (Dotnet)
+    uses: ./.github/workflows/meta-regression-analysis.yml
+    with:
+      runs_on: ubuntu-latest
+      run_id: ${{ github.run_id }}
+      target_branch_artifact_name: ${{ format('target_branch_data_{0}', github.run_id) }}
+      pr_branch_artifact_name: ${{ format('pr_branch_data_{0}', github.run_id) }}
+      item_type_singular: test
+      item_type_plural: tests
