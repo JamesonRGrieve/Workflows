@@ -162,6 +162,10 @@
         "JamesonRGrieve/zod2gql": [
             "react"
         ],
+        "JamesonRGrieve/auth": [
+            "react",
+            "framework"
+        ],
         "JamesonRGrieve/appwrapper": [
             "react",
             "agi"
