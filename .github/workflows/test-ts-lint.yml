@@ -30,6 +30,12 @@ on:
         required: false
         type: string
         default: "self-hosted"
+      target_branch_artifact_name:
+        required: false
+        type: string
+      pr_branch_artifact_name:
+        required: false
+        type: string
     outputs:
       lint_errors_pr_branch:
         description: "JSON string of lint errors on the PR branch after attempting fixes."
@@ -253,6 +259,22 @@ jobs:
             fi
             echo "pushed=true" >> $GITHUB_OUTPUT
           fi
+      # analyze-regressions:
+      #   name: Analyze Lint Regressions
+      #   if: ${{ inputs.target_branch_to_compare != '' && (needs.lint-pr-branch.outputs.has_lint_errors == 'true' || inputs.fail_on_new_regressions_only == true) }}
+      #   needs: [lint-target-branch, lint-pr-branch]
+      #   uses: ./.github/workflows/meta-regression-analysis.yml
+      #   with:
+      #     target_branch_passing_items_json: ${{ needs.lint-target-branch.outputs.clean_files_json }}
+      #     pr_branch_failing_items_json: ${{ needs.lint-pr-branch.outputs.erroring_files_json }}
+      #     item_type_singular: "file with lint error"
+      #     item_type_plural: "files with lint errors"
+      #     pr_number: ${{ github.event.pull_request.number }}
+      #     run_id: ${{ github.run_id }}
+      #     target_branch_artifact_name: ${{ inputs.target_branch_artifact_name }}
+      #     pr_branch_artifact_name: ${{ inputs.pr_branch_artifact_name }}
+      # Removed outputs and steps from here, as they are defined by the reusable workflow
+      # and accessed via `needs.analyze-regressions.outputs.*` in subsequent jobs.
 
       - name: Fail the workflow if formatting was needed
         if: steps.lint-fix-pr.outcome == 'success' && steps.push-changes.outputs.pushed == 'true'
