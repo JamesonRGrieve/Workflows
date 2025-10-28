@@ -31,10 +31,10 @@ on:
         value: ${{ jobs.test-pr-branch-storybook.outputs.failing_stories_json }}
       has_regressions:
         description: "Boolean indicating if Storybook test regressions were found."
-        value: ${{ jobs.analyze-storybook-regressions.outputs.has_regressions }}
+        value: ${{ jobs.compare-results.outputs.has_regressions }}
       regression_count:
         description: "Number of Storybook test regressions found."
-        value: ${{ jobs.analyze-storybook-regressions.outputs.regression_count }}
+        value: ${{ jobs.compare-results.outputs.regression_count }}
 
 jobs:
   lint:
@@ -48,7 +48,12 @@ jobs:
     needs: [lint] # Ensure linting passes before running tests
     runs-on: ${{ inputs.runs_on }}
     outputs:
-      passing_stories_json: ${{ steps.extract-passing-stories.outputs.PASSING_STORIES_JSON }}
+      total: ${{ steps.normalise-target.outputs.total }}
+      passed: ${{ steps.normalise-target.outputs.passed }}
+      percentage: ${{ steps.normalise-target.outputs.percentage }}
+      passing_stories_json: ${{ steps.normalise-target.outputs.passing_items_json }}
+      collection_errors: ${{ steps.normalise-target.outputs.collection_errors }}
+      no_tests_found: ${{ steps.normalise-target.outputs.no_tests_found }}
     steps:
       - name: Checkout Target Branch
         uses: actions/checkout@v4.2.2
@@ -99,47 +104,37 @@ jobs:
             echo "{\"testResults\": [], \"numTotalTests\": 0, \"numPassedTests\": 0}" > target_storybook_results.json # Create empty results
           fi
 
-      - name: Extract Passing Stories (Target)
-        id: extract-passing-stories
+      - name: Normalise Storybook results (Target)
+        id: normalise-target
         run: |
-          echo "Extracting passing stories from target branch results..."
-          # Placeholder: Adapt this to your storybook-test JSON output format
-          # This example assumes a structure like TestCafe or Jest reports
-          # where you can find story IDs that passed.
-          # If your test runner outputs a list of passed story IDs directly, use that.
-          PASSING_STORIES='[]'
-          if [ -f target_storybook_results.json ]; then 
-            # Example: jq '[.testResults[] | select(.status == "passed") | .name] | unique | @json' target_storybook_results.json
-            # This is highly dependent on the actual structure of target_storybook_results.json
-            # For now, a simplified approach: if numPassedTests == numTotalTests and numTotalTests > 0, assume all are passing (needs actual story IDs)
-            # A better placeholder: if the report exists, try to get story IDs.
-            # This needs to be specific to your storybook test runner output.
-            # If `storybook-test` lists all stories and their status, parse that.
-            # As a very basic placeholder, if the file exists and isn't empty, we'll assume it contains some data that needs to be processed.
-            # For now, let's assume all tests found are passing if the overall command succeeded (or we parse a summary).
-            # This is a major simplification and needs actual implementation.
-            if jq -e '.numPassedTests > 0 and .numPassedTests == .numTotalTests' target_storybook_results.json > /dev/null; then
-                echo "Target branch tests all passed or specific parsing logic needed for story IDs."
-                # Ideally, extract actual story IDs here if numPassedTests > 0
-                # This is a placeholder and will likely return an empty list if not all tests passed.
-                # Or, if your report lists stories: jq '[.testResults[] | .name ] | @json' target_storybook_results.json
-                PASSING_STORIES=$(jq '[.testResults[]? | select(.status? == "passed" or .status? == null) | .name // .title] | unique | @json' target_storybook_results.json)
-            else
-                echo "Not all target tests passed or specific parsing logic for story IDs needed."
-                PASSING_STORIES=$(jq '[.testResults[]? | select(.status? == "passed") | .name // .title] | unique | @json' target_storybook_results.json)
-            fi
-            if [ "$PASSING_STORIES" == "null" ]; then PASSING_STORIES='[]'; fi
-          fi
-          echo "Passing stories (JSON Target): $PASSING_STORIES"
-          echo "PASSING_STORIES_JSON=$PASSING_STORIES" >> $GITHUB_OUTPUT
+          python "$GITHUB_WORKSPACE/.github/scripts/storybook_results_to_standard_json.py" \
+            target_storybook_results.json \
+            target_test_data.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload target branch artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            target_test_data.json
+            target_storybook_results.json
+          retention-days: 3
+          if-no-files-found: ignore
 
   test-pr-branch-storybook:
     name: Test PR Branch Stories
     needs: [lint]
     runs-on: ${{ inputs.runs_on }}
     outputs:
-      has_errors: ${{ steps.run-tests-pr.outcome == 'failure' || steps.extract-failing-stories.outputs.HAS_FAILING_STORIES == 'true' }}
-      failing_stories_json: ${{ steps.extract-failing-stories.outputs.FAILING_STORIES_JSON }}
+      has_errors: ${{ steps.run-tests-pr.outcome == 'failure' || steps.normalise-pr.outputs.has_failures == 'true' }}
+      failing_stories_json: ${{ steps.normalise-pr.outputs.failing_items_json }}
+      total: ${{ steps.normalise-pr.outputs.total }}
+      passed: ${{ steps.normalise-pr.outputs.passed }}
+      percentage: ${{ steps.normalise-pr.outputs.percentage }}
+      collection_errors: ${{ steps.normalise-pr.outputs.collection_errors }}
+      no_tests_found: ${{ steps.normalise-pr.outputs.no_tests_found }}
     steps:
       - name: Checkout Repository (PR)
         uses: actions/checkout@v4.2.2
@@ -189,53 +184,67 @@ jobs:
             echo "{\"testResults\": [], \"numTotalTests\": 0, \"numPassedTests\": 0, \"numFailedTests\": 0}" > pr_storybook_results.json # Create empty results
           fi
 
-      - name: Extract Failing Stories (PR)
-        id: extract-failing-stories
+      - name: Normalise Storybook results (PR)
+        id: normalise-pr
         run: |
-          echo "Extracting failing stories from PR branch results..."
-          FAILING_STORIES='[]'
-          HAS_FAILURES='false'
-          if [ -f pr_storybook_results.json ]; then
-            # Example: jq '[.testResults[] | select(.status == "failed") | .name] | unique | @json' pr_storybook_results.json
-            # This is highly dependent on your test runner's JSON output.
-            FAILING_STORIES=$(jq '[.testResults[]? | select(.status? == "failed" or .status? == "broken" or .status? == "timedOut") | .name // .title] | unique | @json' pr_storybook_results.json)
-            if [ "$FAILING_STORIES" == "null" ]; then FAILING_STORIES='[]'; fi
-            if [ "$FAILING_STORIES" != "[]" ]; then HAS_FAILURES='true'; fi
-            # Alternative: check numFailedTests from summary
-            # if jq -e '.numFailedTests > 0' pr_storybook_results.json > /dev/null; then HAS_FAILURES='true'; fi
-          fi
-          echo "Failing stories (JSON PR): $FAILING_STORIES"
-          echo "FAILING_STORIES_JSON=$FAILING_STORIES" >> $GITHUB_OUTPUT
-          echo "HAS_FAILING_STORIES=$HAS_FAILURES" >> $GITHUB_OUTPUT
+          python "$GITHUB_WORKSPACE/.github/scripts/storybook_results_to_standard_json.py" \
+            pr_storybook_results.json \
+            pr_test_data.json \
+            --github-output "$GITHUB_OUTPUT"
 
-      - name: Upload artifacts if tests fail (PR)
-        if: steps.run-tests-pr.outcome == 'failure' || steps.extract-failing-stories.outputs.HAS_FAILING_STORIES == 'true'
+      - name: Upload PR branch artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: storybook-test-results-pr
+          name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
+            pr_test_data.json
             pr_storybook_results.json
             ./*-snapshots/
             ./coverage/
           retention-days: 7
+          if-no-files-found: ignore
 
-  analyze-storybook-regressions:
-    name: Analyze Storybook Regressions
+  compare-results:
+    if: ${{ inputs.target_branch_to_compare != '' }}
+    needs: [test-target-branch-storybook, test-pr-branch-storybook]
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch_to_compare }}
+      baseline_results_artifact: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: target_test_data.json
+      current_label: ${{ github.head_ref || github.ref_name || 'source branch' }}
+      current_results_artifact: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: pr_test_data.json
+      baseline_passed: ${{ needs.test-target-branch-storybook.outputs.passed || '0' }}
+      baseline_total: ${{ needs.test-target-branch-storybook.outputs.total || '0' }}
+      baseline_percentage: ${{ needs.test-target-branch-storybook.outputs.percentage || '0' }}
+      current_passed: ${{ needs.test-pr-branch-storybook.outputs.passed || '0' }}
+      current_total: ${{ needs.test-pr-branch-storybook.outputs.total || '0' }}
+      current_percentage: ${{ needs.test-pr-branch-storybook.outputs.percentage || '0' }}
+      baseline_collection_errors: ${{ needs.test-target-branch-storybook.outputs.collection_errors || 'false' }}
+      baseline_no_tests_found: ${{ needs.test-target-branch-storybook.outputs.no_tests_found || 'false' }}
+      current_collection_errors: ${{ needs.test-pr-branch-storybook.outputs.collection_errors || 'false' }}
+      current_no_tests_found: ${{ needs.test-pr-branch-storybook.outputs.no_tests_found || 'false' }}
+      artifact_name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_storybook
+
+  perform-regression-analysis:
     if: ${{ inputs.target_branch_to_compare != '' }}
     needs: [test-target-branch-storybook, test-pr-branch-storybook]
     uses: ./.github/workflows/meta-regression-analysis.yml
     with:
-      target_branch_passing_items_json: ${{ needs.test-target-branch-storybook.outputs.passing_stories_json }}
-      pr_branch_failing_items_json: ${{ needs.test-pr-branch-storybook.outputs.failing_stories_json }}
       item_type_singular: "Storybook story"
       item_type_plural: "Storybook stories"
       pr_number: ${{ github.event.pull_request.number }}
       run_id: ${{ github.run_id }}
+      target_branch_artifact_name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      pr_branch_artifact_name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
 
   check-storybook-results:
     name: Check Storybook Results & Regressions
     runs-on: ${{ inputs.runs_on }}
-    needs: [test-pr-branch-storybook, analyze-storybook-regressions]
+    needs: [test-pr-branch-storybook, compare-results, perform-regression-analysis]
     if: always() # Always run to give a final status
     steps:
       - name: Evaluate Storybook Test Results
@@ -250,11 +259,10 @@ jobs:
           echo "Target Branch for Comparison: ${{ inputs.target_branch_to_compare }}"
 
           if [[ "$REGRESSION_ANALYSIS_INTENDED" == "true" ]]; then
-            if [[ "${{ needs.analyze-storybook-regressions.result }}" != "skipped" ]]; then
-              HAS_REGRESSIONS="${{ needs.analyze-storybook-regressions.outputs.has_regressions }}"
-              REGRESSION_COUNT="${{ needs.analyze-storybook-regressions.outputs.regression_count }}"
+            if [[ "${{ needs.compare-results.result }}" != "skipped" ]]; then
+              HAS_REGRESSIONS="${{ needs.compare-results.outputs.has_regressions }}"
+              REGRESSION_COUNT="${{ needs.compare-results.outputs.regression_count }}"
               echo "Storybook Regressions Found: $HAS_REGRESSIONS ($REGRESSION_COUNT)"
-              # You could download and cat the regression_details_storybook_stories.txt artifact here
             else
               echo "Storybook regression analysis job was skipped."
             fi
