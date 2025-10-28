@@ -289,6 +289,7 @@ jobs:
           import json
           import os
           from pathlib import Path
+          from typing import List, TextIO
 
           def load_json(path: str) -> dict:
               file_path = Path(path)
@@ -412,7 +413,7 @@ jobs:
               encoding="utf-8",
           )
 
-          def write_section(handle, title: str, entries: list[str], intro: str) -> None:
+          def write_section(handle: TextIO, title: str, entries: List[str], intro: str) -> None:
               if not entries:
                   return
               handle.write(f"{title} ({len(entries)} tests)\n")
