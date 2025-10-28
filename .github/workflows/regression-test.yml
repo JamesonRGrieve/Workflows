@@ -1,0 +1,601 @@
+name: Reusable Regression Test
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: "Runner label for the regression analysis job."
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      baseline_label:
+        description: "Display name for the baseline (target) test results."
+        required: true
+        type: string
+      baseline_results_json:
+        description: "Standardized JSON string describing the baseline test results."
+        required: false
+        type: string
+        default: "{}"
+      baseline_results_artifact:
+        description: "Optional artifact name containing the baseline JSON payload."
+        required: false
+        type: string
+        default: ""
+      baseline_results_filename:
+        description: "Optional relative path within the baseline artifact to the JSON payload."
+        required: false
+        type: string
+        default: ""
+      current_label:
+        description: "Display name for the current (PR) test results."
+        required: true
+        type: string
+      current_results_json:
+        description: "Standardized JSON string describing the current test results."
+        required: false
+        type: string
+        default: "{}"
+      current_results_artifact:
+        description: "Optional artifact name containing the current JSON payload."
+        required: false
+        type: string
+        default: ""
+      current_results_filename:
+        description: "Optional relative path within the current artifact to the JSON payload."
+        required: false
+        type: string
+        default: ""
+      baseline_passed:
+        description: "Number of passing tests in the baseline run."
+        required: true
+        type: string
+      baseline_total:
+        description: "Total number of tests in the baseline run."
+        required: true
+        type: string
+      baseline_percentage:
+        description: "Pass percentage for the baseline run."
+        required: true
+        type: string
+      current_passed:
+        description: "Number of passing tests in the current run."
+        required: true
+        type: string
+      current_total:
+        description: "Total number of tests in the current run."
+        required: true
+        type: string
+      current_percentage:
+        description: "Pass percentage for the current run."
+        required: true
+        type: string
+      baseline_collection_errors:
+        description: "Whether the baseline run encountered discovery errors."
+        required: false
+        type: string
+        default: "false"
+      baseline_no_tests_found:
+        description: "Whether the baseline run found zero tests."
+        required: false
+        type: string
+        default: "false"
+      current_collection_errors:
+        description: "Whether the current run encountered discovery errors."
+        required: false
+        type: string
+        default: "false"
+      current_no_tests_found:
+        description: "Whether the current run found zero tests."
+        required: false
+        type: string
+        default: "false"
+      artifact_name:
+        description: "Name for the artifact containing regression details."
+        required: false
+        type: string
+        default: "regression_details"
+    outputs:
+      has_regressions:
+        description: "Boolean indicating if regressions were found."
+        value: ${{ jobs.regression-analysis.outputs.has_regressions }}
+      regression_count:
+        description: "Number of regressions detected."
+        value: ${{ jobs.regression-analysis.outputs.regression_count }}
+      pass_to_fail_count:
+        description: "Number of tests that regressed from pass to fail."
+        value: ${{ jobs.regression-analysis.outputs.pass_to_fail_count }}
+      pass_to_skip_count:
+        description: "Number of tests that regressed from pass to skip/xfail."
+        value: ${{ jobs.regression-analysis.outputs.pass_to_skip_count }}
+      pass_to_gone_count:
+        description: "Number of previously passing tests that disappeared."
+        value: ${{ jobs.regression-analysis.outputs.pass_to_gone_count }}
+      fail_to_gone_count:
+        description: "Number of previously failing tests that disappeared."
+        value: ${{ jobs.regression-analysis.outputs.fail_to_gone_count }}
+      discovery_regression_count:
+        description: "Number of new discovery warnings."
+        value: ${{ jobs.regression-analysis.outputs.discovery_regression_count }}
+      fail_to_skip_count:
+        description: "Number of tests improved from fail to skip."
+        value: ${{ jobs.regression-analysis.outputs.fail_to_skip_count }}
+      fail_to_pass_count:
+        description: "Number of tests improved from fail to pass."
+        value: ${{ jobs.regression-analysis.outputs.fail_to_pass_count }}
+      new_tests_count:
+        description: "Number of new tests introduced in the current run."
+        value: ${{ jobs.regression-analysis.outputs.new_tests_count }}
+
+jobs:
+  regression-analysis:
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      has_regressions: ${{ steps.analyze.outputs.has_regressions }}
+      regression_count: ${{ steps.analyze.outputs.regression_count }}
+      pass_to_fail_count: ${{ steps.analyze.outputs.pass_to_fail_count }}
+      pass_to_skip_count: ${{ steps.analyze.outputs.pass_to_skip_count }}
+      pass_to_gone_count: ${{ steps.analyze.outputs.pass_to_gone_count }}
+      fail_to_gone_count: ${{ steps.analyze.outputs.fail_to_gone_count }}
+      discovery_regression_count: ${{ steps.analyze.outputs.discovery_regression_count }}
+      fail_to_skip_count: ${{ steps.analyze.outputs.fail_to_skip_count }}
+      fail_to_pass_count: ${{ steps.analyze.outputs.fail_to_pass_count }}
+      new_tests_count: ${{ steps.analyze.outputs.new_tests_count }}
+    steps:
+      - name: Validate discovery status
+        run: |
+          echo "Baseline discovery errors: ${{ inputs.baseline_collection_errors }}"
+          echo "Baseline no tests found: ${{ inputs.baseline_no_tests_found }}"
+          echo "Current discovery errors: ${{ inputs.current_collection_errors }}"
+          echo "Current no tests found: ${{ inputs.current_no_tests_found }}"
+
+          if [[ "${{ inputs.current_collection_errors }}" == "true" ]]; then
+            echo "::error::Discovery errors detected in current test results."
+            exit 1
+          fi
+
+          if [[ "${{ inputs.current_no_tests_found }}" == "true" ]]; then
+            echo "::error::No tests were discovered in the current run."
+            exit 1
+          fi
+
+          if [[ "${{ inputs.baseline_collection_errors }}" == "true" ]]; then
+            echo "::warning::Baseline results include discovery errors. Comparisons may be incomplete."
+          fi
+
+          if [[ "${{ inputs.baseline_no_tests_found }}" == "true" ]]; then
+            echo "::warning::No tests were found in the baseline run."
+          fi
+
+      - name: Download baseline results artifact
+        if: ${{ inputs.baseline_results_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.baseline_results_artifact }}
+          path: baseline_artifact
+      - name: Download current results artifact
+        if: ${{ inputs.current_results_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.current_results_artifact }}
+          path: current_artifact
+      - name: Prepare regression input files
+        env:
+          BASELINE_RESULTS_ARTIFACT_DIR: ${{ inputs.baseline_results_artifact != '' && 'baseline_artifact' || '' }}
+          BASELINE_RESULTS_FILENAME: ${{ inputs.baseline_results_filename }}
+          BASELINE_ARTIFACT_REQUESTED: ${{ inputs.baseline_results_artifact != '' }}
+          CURRENT_RESULTS_ARTIFACT_DIR: ${{ inputs.current_results_artifact != '' && 'current_artifact' || '' }}
+          CURRENT_RESULTS_FILENAME: ${{ inputs.current_results_filename }}
+          CURRENT_ARTIFACT_REQUESTED: ${{ inputs.current_results_artifact != '' }}
+          BASELINE_RESULTS_JSON: ${{ inputs.baseline_results_artifact != '' && '' || inputs.baseline_results_json }}
+          CURRENT_RESULTS_JSON: ${{ inputs.current_results_artifact != '' && '' || inputs.current_results_json }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def hydrate_from_artifact(artifact_dir, filename, destination):
+              if not artifact_dir:
+                  return False
+
+              base_path = Path(artifact_dir)
+              if not base_path.exists():
+                  print(f'::warning::Artifact directory {artifact_dir} does not exist.')
+                  return False
+
+              candidates = []
+
+              if filename:
+                  explicit = base_path / filename
+                  if explicit.exists():
+                      candidates.append(explicit)
+                  else:
+                      print(
+                          f'::warning::Specified file {filename} not found within artifact {artifact_dir}.',
+                      )
+
+              if not candidates:
+                  candidates = sorted(base_path.rglob('*.json'))
+
+              for candidate in candidates:
+                  try:
+                      destination.write_text(candidate.read_text(encoding='utf-8'), encoding='utf-8')
+                      print(f'Loaded regression input from artifact file: {candidate}')
+                      return True
+                  except Exception as exc:
+                      print(f'::warning::Failed to read artifact file {candidate}: {exc}')
+
+              return False
+
+          def hydrate_from_env(value, destination, label):
+              if not value:
+                  return False
+              destination.write_text(value, encoding='utf-8')
+              print(f'Loaded regression input for {label} from workflow inputs.')
+              return True
+
+          baseline_path = Path('baseline_results.json')
+          current_path = Path('current_results.json')
+
+          baseline_artifact_requested = os.environ.get('BASELINE_ARTIFACT_REQUESTED', '').lower() == 'true'
+          current_artifact_requested = os.environ.get('CURRENT_ARTIFACT_REQUESTED', '').lower() == 'true'
+
+          baseline_ready = hydrate_from_artifact(
+              os.environ.get('BASELINE_RESULTS_ARTIFACT_DIR'),
+              os.environ.get('BASELINE_RESULTS_FILENAME'),
+              baseline_path,
+          )
+
+          if not baseline_ready and baseline_artifact_requested:
+              print('::error::Expected baseline regression JSON artifact but none was found.')
+              raise SystemExit(1)
+
+          if not baseline_ready:
+              baseline_ready = hydrate_from_env(
+                  os.environ.get('BASELINE_RESULTS_JSON'),
+                  baseline_path,
+                  'baseline',
+              )
+
+          current_ready = hydrate_from_artifact(
+              os.environ.get('CURRENT_RESULTS_ARTIFACT_DIR'),
+              os.environ.get('CURRENT_RESULTS_FILENAME'),
+              current_path,
+          )
+
+          if not current_ready and current_artifact_requested:
+              print('::error::Expected current regression JSON artifact but none was found.')
+              raise SystemExit(1)
+
+          if not current_ready:
+              current_ready = hydrate_from_env(
+                  os.environ.get('CURRENT_RESULTS_JSON'),
+                  current_path,
+                  'current',
+              )
+
+          if not baseline_ready:
+              print('::warning::No baseline regression JSON could be located. Using empty defaults.')
+              baseline_path.write_text('{}', encoding='utf-8')
+
+          if not current_ready:
+              print('::warning::No current regression JSON could be located. Using empty defaults.')
+              current_path.write_text('{}', encoding='utf-8')
+          PY
+      - name: Analyze regression data
+        id: analyze
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def load_json(path: str) -> dict:
+              file_path = Path(path)
+              if not file_path.exists():
+                  print(f"::warning::Input file {path} not found. Using empty defaults.")
+                  return {}
+
+              content = file_path.read_text(encoding='utf-8').strip()
+              if not content:
+                  print(f"::warning::Input file {path} is empty. Using empty defaults.")
+                  return {}
+
+              try:
+                  return json.loads(content)
+              except json.JSONDecodeError as exc:
+                  print(f"::warning::Failed to parse JSON from {path}: {exc}")
+                  return {}
+
+          def coerce_list(value):
+              if isinstance(value, list):
+                  return [str(item) for item in value]
+              return []
+
+          def extract_from_tests_array(results: dict, data: dict) -> None:
+              tests = results.get("tests")
+              if not isinstance(tests, list):
+                  return
+
+              for entry in tests:
+                  if not isinstance(entry, dict):
+                      continue
+                  test_id = entry.get("id") or entry.get("name") or entry.get("nodeid")
+                  if not test_id:
+                      continue
+                  status = entry.get("status") or entry.get("outcome")
+                  if not status:
+                      continue
+                  status = status.lower()
+                  if status in {"passed", "pass"}:
+                      data["passing"].add(str(test_id))
+                  elif status in {"failed", "fail", "error"}:
+                      data["failing"].add(str(test_id))
+                  elif status in {"skipped", "skip"}:
+                      data["skipped"].add(str(test_id))
+                  elif status in {"xfailed", "xfail"}:
+                      data["xfailed"].add(str(test_id))
+                  else:
+                      data["other"].add(str(test_id))
+
+          def build_status_sets(raw: dict) -> dict:
+              data = {
+                  "passing": set(coerce_list(raw.get("passing_tests"))),
+                  "failing": set(coerce_list(raw.get("failing_tests"))),
+                  "skipped": set(coerce_list(raw.get("skipped_tests"))),
+                  "xfailed": set(coerce_list(raw.get("xfailed_tests"))),
+                  "warnings": set(coerce_list(raw.get("warnings"))),
+                  "all": set(coerce_list(raw.get("all_tests"))),
+                  "other": set(),
+              }
+
+              extract_from_tests_array(raw, data)
+
+              if not data["all"]:
+                  data["all"].update(
+                      data["passing"]
+                      | data["failing"]
+                      | data["skipped"]
+                      | data["xfailed"]
+                      | data["other"]
+                  )
+
+              return data
+
+          baseline_data = build_status_sets(load_json("baseline_results.json"))
+          current_data = build_status_sets(load_json("current_results.json"))
+
+          pass_to_fail = sorted(baseline_data["passing"] & current_data["failing"])
+          pass_to_skip = sorted(
+              baseline_data["passing"] & (current_data["skipped"] | current_data["xfailed"])
+          )
+          pass_to_gone = sorted(baseline_data["passing"] - current_data["all"])
+          fail_to_gone = sorted(baseline_data["failing"] - current_data["all"])
+          discovery_regressions = sorted(current_data["warnings"] - baseline_data["warnings"])
+
+          fail_to_skip = sorted(baseline_data["failing"] & current_data["skipped"])
+          fail_to_pass = sorted(baseline_data["failing"] & current_data["passing"])
+          new_tests = sorted(current_data["all"] - baseline_data["all"])
+
+          regression_count = (
+              len(pass_to_fail)
+              + len(pass_to_skip)
+              + len(pass_to_gone)
+              + len(fail_to_gone)
+              + len(discovery_regressions)
+          )
+          has_regressions = regression_count > 0
+
+          analysis_payload = {
+              "pass_to_fail": pass_to_fail,
+              "pass_to_skip": pass_to_skip,
+              "pass_to_gone": pass_to_gone,
+              "fail_to_gone": fail_to_gone,
+              "discovery_regressions": discovery_regressions,
+              "fail_to_skip": fail_to_skip,
+              "fail_to_pass": fail_to_pass,
+              "new_tests": new_tests,
+              "counts": {
+                  "pass_to_fail": len(pass_to_fail),
+                  "pass_to_skip": len(pass_to_skip),
+                  "pass_to_gone": len(pass_to_gone),
+                  "fail_to_gone": len(fail_to_gone),
+                  "discovery": len(discovery_regressions),
+                  "fail_to_skip": len(fail_to_skip),
+                  "fail_to_pass": len(fail_to_pass),
+                  "new_tests": len(new_tests),
+              },
+          }
+
+          Path("regression_analysis.json").write_text(
+              json.dumps(analysis_payload, indent=2),
+              encoding="utf-8",
+          )
+
+          def write_section(handle, title: str, entries: list[str], intro: str) -> None:
+              if not entries:
+                  return
+              handle.write(f"{title} ({len(entries)} tests)\n")
+              handle.write(f"{intro}\n")
+              for idx, test_name in enumerate(entries, 1):
+                  handle.write(f"  {idx}. {test_name}\n")
+              handle.write("\n")
+
+          with Path("comprehensive_regression_report.txt").open("w", encoding="utf-8") as report:
+              report.write("COMPREHENSIVE REGRESSION ANALYSIS\n")
+              report.write("=" * 50 + "\n\n")
+
+              write_section(
+                  report,
+                  "PASS-TO-FAIL REGRESSIONS",
+                  pass_to_fail,
+                  "Previously passing, now failing:",
+              )
+              write_section(
+                  report,
+                  "PASS-TO-SKIP REGRESSIONS",
+                  pass_to_skip,
+                  "Previously passing, now skipped or xfailed:",
+              )
+              write_section(
+                  report,
+                  "FAIL-TO-SKIP IMPROVEMENTS",
+                  fail_to_skip,
+                  "Previously failing, now skipped (treated as improvements):",
+              )
+              write_section(
+                  report,
+                  "FAIL-TO-PASS IMPROVEMENTS",
+                  fail_to_pass,
+                  "Previously failing, now passing (treated as improvements):",
+              )
+              write_section(
+                  report,
+                  "PASS-TO-GONE REGRESSIONS",
+                  pass_to_gone,
+                  "Previously passing, now completely missing:",
+              )
+              write_section(
+                  report,
+                  "FAIL-TO-GONE REGRESSIONS",
+                  fail_to_gone,
+                  "Previously failing, now completely missing:",
+              )
+
+              if discovery_regressions:
+                  report.write(
+                      f"DISCOVERY REGRESSIONS ({len(discovery_regressions)} warnings)\n"
+                  )
+                  report.write("New warnings not present in baseline:\n")
+                  for idx, warning in enumerate(discovery_regressions, 1):
+                      truncated = (warning[:200] + "...") if len(warning) > 200 else warning
+                      report.write(f"  {idx}. {truncated}\n")
+                  report.write("\n")
+
+              write_section(
+                  report,
+                  "NEW TESTS",
+                  new_tests,
+                  "Tests present only in the current run:",
+              )
+
+              if not has_regressions and not (fail_to_skip or fail_to_pass or new_tests):
+                  report.write("No regressions or test suite changes detected.\n")
+
+          if pass_to_fail:
+              with Path("regression_details.txt").open("w", encoding="utf-8") as handle:
+                  handle.write(
+                      f"Found {len(pass_to_fail)} tests that regressed from pass to fail:\n\n"
+                  )
+                  for idx, test_name in enumerate(pass_to_fail, 1):
+                      handle.write(f"{idx}. {test_name}\n")
+          else:
+              Path("regression_details.txt").write_text(
+                  "No pass-to-fail regressions detected.\n",
+                  encoding="utf-8",
+              )
+
+          table_rows = [
+              ("Pass → Fail", len(pass_to_fail)),
+              ("Pass → Skip/XFail", len(pass_to_skip)),
+              ("Pass → Gone", len(pass_to_gone)),
+              ("Fail → Gone", len(fail_to_gone)),
+              ("Discovery Warnings", len(discovery_regressions)),
+              ("Fail → Skip (Improvement)", len(fail_to_skip)),
+              ("Fail → Pass (Improvement)", len(fail_to_pass)),
+              ("New Tests", len(new_tests)),
+          ]
+
+          summary_lines = ["| Category | Count |", "| --- | --- |"]
+          summary_lines.extend([f"| {label} | {count} |" for label, count in table_rows])
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with Path(summary_path).open("a", encoding="utf-8") as summary_file:
+                  summary_file.write("### Regression Breakdown\n")
+                  summary_file.write("\n".join(summary_lines) + "\n\n")
+                  if fail_to_skip or fail_to_pass:
+                      summary_file.write("_Improvements are highlighted for visibility and do not fail the job._\n\n")
+                  if new_tests:
+                      summary_file.write(
+                          "New tests are listed to highlight additions alongside regressions.\n\n"
+                      )
+
+          print("📊 Regression Analysis Results:")
+          for label, count in table_rows:
+              print(f"  {label}: {count}")
+          if has_regressions:
+              print(f"❌ Total regressions detected: {regression_count}")
+          else:
+              print("✅ No regressions detected in monitored categories.")
+
+          def sanitize(value: str) -> str:
+              return value.replace("%", "%25").replace("\n", "%0A").replace("\r", "%0D")
+
+          outputs = {
+              "has_regressions": "true" if has_regressions else "false",
+              "regression_count": str(regression_count),
+              "pass_to_fail_count": str(len(pass_to_fail)),
+              "pass_to_skip_count": str(len(pass_to_skip)),
+              "pass_to_gone_count": str(len(pass_to_gone)),
+              "fail_to_gone_count": str(len(fail_to_gone)),
+              "discovery_regression_count": str(len(discovery_regressions)),
+              "fail_to_skip_count": str(len(fail_to_skip)),
+              "fail_to_pass_count": str(len(fail_to_pass)),
+              "new_tests_count": str(len(new_tests)),
+          }
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with Path(github_output).open("a", encoding="utf-8") as handle:
+                  for key, value in outputs.items():
+                      handle.write(f"{key}={sanitize(value)}\n")
+          else:
+              print("::warning::GITHUB_OUTPUT environment variable is not set.")
+          PY
+
+      - name: Upload regression artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            regression_details.txt
+            comprehensive_regression_report.txt
+            regression_analysis.json
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Compare aggregate results when no regressions
+        if: ${{ steps.analyze.outputs.has_regressions != 'true' }}
+        run: |
+          echo "${{ inputs.baseline_label }}: ${{ inputs.baseline_passed }}/${{ inputs.baseline_total }} passed (${{ inputs.baseline_percentage }}%)"
+          echo "${{ inputs.current_label }}: ${{ inputs.current_passed }}/${{ inputs.current_total }} passed (${{ inputs.current_percentage }}%)"
+
+          if [ "${{ inputs.current_total }}" = "0" ]; then
+            echo "::error::The current run reported zero collected tests."
+            exit 1
+          fi
+
+          if ! command -v bc >/dev/null 2>&1; then
+            echo "::warning::'bc' is not available; skipping numeric comparison."
+            exit 0
+          fi
+
+          if (( $(echo "${{ inputs.current_passed }} < ${{ inputs.baseline_passed }}" | bc -l) )); then
+            echo "::error::Fewer passing tests than baseline."
+            exit 1
+          fi
+
+          if (( $(echo "${{ inputs.current_percentage }} < ${{ inputs.baseline_percentage }}" | bc -l) )); then
+            echo "::error::Pass percentage decreased compared to baseline."
+            exit 1
+          fi
+
+          echo "✅ Aggregate test results are at least as good as baseline."
+
+      - name: Fail when regressions detected
+        if: ${{ steps.analyze.outputs.has_regressions == 'true' }}
+        run: |
+          echo "::error::Test regressions detected. See regression artifacts for details."
+          exit 1
