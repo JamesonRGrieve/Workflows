@@ -1,0 +1,15 @@
+name: On Pull Request
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-unittest:
+    name: Python unittest regression
+    uses: ./.github/workflows/test-py-unittest.yml
+    with:
+      target_branch_to_compare: ${{ github.base_ref }}
+    secrets: inherit
