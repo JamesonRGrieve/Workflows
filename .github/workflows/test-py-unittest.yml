@@ -380,12 +380,12 @@ jobs:
           else
             if [ -f unittest_collection.json ]; then
               TEST_COUNT=$(python - <<'PY'
-import json
-with open('unittest_collection.json', 'r', encoding='utf-8') as handle:
-    payload = json.load(handle)
-print(len(payload.get('tests', [])))
-PY
-)
+              import json
+              with open('unittest_collection.json', 'r', encoding='utf-8') as handle:
+                  payload = json.load(handle)
+              print(len(payload.get('tests', [])))
+              PY
+              )
             else
               TEST_COUNT=0
             fi
@@ -718,12 +718,12 @@ PY
           else
             if [ -f unittest_collection.json ]; then
               TEST_COUNT=$(python - <<'PY'
-import json
-with open('unittest_collection.json', 'r', encoding='utf-8') as handle:
-    payload = json.load(handle)
-print(len(payload.get('tests', [])))
-PY
-)
+              import json
+              with open('unittest_collection.json', 'r', encoding='utf-8') as handle:
+                  payload = json.load(handle)
+              print(len(payload.get('tests', [])))
+              PY
+              )
             else
               TEST_COUNT=0
             fi
