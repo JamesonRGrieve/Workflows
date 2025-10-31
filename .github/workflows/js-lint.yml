@@ -17,10 +17,12 @@ on:
         description: "The exact lint command to run (e.g., npm run lint:eslint)"
         required: true
         type: string
+        default: npm run lint
       fix_command:
         description: "The exact command to run for auto-fixing lint issues (e.g., npm run lint:eslint -- --fix)"
         required: true
         type: string
+        default: npm run fix
       fail_on_new_regressions_only:
         description: "If true, only fail if new regressions are found compared to target branch. If false, fail on any lint error in PR."
         required: false

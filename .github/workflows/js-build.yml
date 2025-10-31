@@ -14,7 +14,7 @@ on:
         default: "self-hosted"
 jobs:
   lint:
-    uses: ./.github/workflows/test-ts-lint.yml
+    uses: ./.github/workflows/js-lint.yml
     permissions:
       contents: write
     with:
