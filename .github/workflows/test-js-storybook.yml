@@ -38,7 +38,7 @@ on:
 
 jobs:
   lint:
-    uses: ./.github/workflows/test-lint-js.yml # Assumes JS/TS linting for Storybook setup
+    uses: ./.github/workflows/test-ts-lint.yml # Assumes JS/TS linting for Storybook setup
     permissions:
       contents: write
 
@@ -244,7 +244,8 @@ jobs:
   check-storybook-results:
     name: Check Storybook Results & Regressions
     runs-on: ${{ inputs.runs_on }}
-    needs: [test-pr-branch-storybook, compare-results, perform-regression-analysis]
+    needs:
+      [test-pr-branch-storybook, compare-results, perform-regression-analysis]
     if: always() # Always run to give a final status
     steps:
       - name: Evaluate Storybook Test Results

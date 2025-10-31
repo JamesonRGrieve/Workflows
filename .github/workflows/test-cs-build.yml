@@ -1,0 +1,19 @@
+name: .NET Build
+
+on:
+    push:
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout Repository
+              uses: actions/checkout@v4
+            - name: Install .NET
+              uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: "9.0.x"
+            - name: Restore Dependencies
+              run: dotnet restore example
+            - name: Build Project
+              run: dotnet build example
