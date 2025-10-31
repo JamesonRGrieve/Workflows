@@ -313,7 +313,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
+          name: nunit_pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
             pr_test_data.json
             pr_test_output.txt
@@ -558,7 +558,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+          name: nunit_target_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
             target_test_data.json
             target_test_output.txt
@@ -581,10 +581,10 @@ jobs:
     with:
       runs_on: ${{ inputs.runs_on }}
       baseline_label: ${{ inputs.target_branch_to_compare }}
-      baseline_results_artifact: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_artifact: nunit_target_branch_data_${{ github.event.pull_request.number || github.run_id }}
       baseline_results_filename: target_test_data.json
       current_label: ${{ github.head_ref || github.ref_name || 'source branch' }}
-      current_results_artifact: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
+      current_results_artifact: nunit_pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
       current_results_filename: pr_test_data.json
       baseline_passed: ${{ needs.test-target-branch.outputs.passed }}
       baseline_total: ${{ needs.test-target-branch.outputs.total }}
