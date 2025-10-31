@@ -992,7 +992,7 @@ jobs:
 
   perform-regression-analysis:
     needs: [test-source-branch, test-target-branch]
-    uses: ./.github/workflows/meta-regression-analysis.yml
+    uses: ./.github/workflows/test-meta-regression-analysis.yml
     with:
       item_type_singular: "test"
       item_type_plural: "tests"
@@ -1369,7 +1369,7 @@ jobs:
           elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
             # This case handles general comparison failures NOT due to specific regressions
             MESSAGE_LINES+=("**:warning: TEST RESULTS DECLINED**")
-            MESSAGE_LINES+=("  - The PR branch shows a decrease in test success compared to the target branch, but no specific regressions were identified by the \`meta-regression-analysis\` job.")
+            MESSAGE_LINES+=("  - The PR branch shows a decrease in test success compared to the target branch, but no specific regressions were identified by the \`test-meta-regression-analysis\` job.")
             MESSAGE_LINES+=("  - PR Branch (\`${PR_BRANCH}\`): **${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} passed (${PR_PERCENTAGE}%)**")
             MESSAGE_LINES+=("  - Target Branch (\`${TARGET_BRANCH}\`): **${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} passed (${TARGET_PERCENTAGE}%)**")
           elif [[ "$COMPARE_RESULT" == "success" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then

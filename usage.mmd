@@ -27,7 +27,7 @@ flowchart LR
         WF_GH_TRIGGER_SYNC["gh-trigger-sync #6"]
         WF_GH_META_SYNC["gh-meta-sync #5"]
         WF_GH_TEST_DOWNSTREAM["gh-test-downstream"]
-        WF_META_REGRESSION["meta-regression-analysis"]
+        WF_META_REGRESSION["test-meta-regression-analysis"]
         WF_PUBLISH_GHCR["publish-ghcr"]
         WF_PUBLISH_PY_PYPI["publish-py-pypi"]
         WF_PUBLISH_STORYBOOK["publish-storybook"]
@@ -51,9 +51,9 @@ flowchart LR
     WF_TEST_PY_PYTEST -.-> WF_META_REGRESSION
     BE_PUBLISH --> WF_PUBLISH_PY_PYPI
 
-    PUSH --> |Push to dev or main<br>Require meta-regression-analysis| WF_PUBLISH_GHCR
+    PUSH --> |Push to dev or main<br>Require test-meta-regression-analysis| WF_PUBLISH_GHCR
     PR_MAIN --> WF_GH_TEST_DOWNSTREAM
-    PUBLISH -->|Require meta-regression-analysis| WF_PUBLISH_GHCR
+    PUBLISH -->|Require test-meta-regression-analysis| WF_PUBLISH_GHCR
     PUSH --> WF_GH_TRIGGER_SYNC
     PR_MAIN --> WF_GH_SUBMODULES
     PR_DEV --> WF_GH_SUBMODULES

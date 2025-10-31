@@ -265,7 +265,7 @@ jobs:
       #   name: Analyze Lint Regressions
       #   if: ${{ inputs.target_branch_to_compare != '' && (needs.lint-pr-branch.outputs.has_lint_errors == 'true' || inputs.fail_on_new_regressions_only == true) }}
       #   needs: [lint-target-branch, lint-pr-branch]
-      #   uses: ./.github/workflows/meta-regression-analysis.yml
+      #   uses: ./.github/workflows/test-meta-regression-analysis.yml
       #   with:
       #     target_branch_passing_items_json: ${{ needs.lint-target-branch.outputs.clean_files_json }}
       #     pr_branch_failing_items_json: ${{ needs.lint-pr-branch.outputs.erroring_files_json }}
@@ -290,7 +290,7 @@ jobs:
   #   name: Analyze Lint Regressions
   #   if: ${{ inputs.target_branch_to_compare != '' && (needs.lint-pr-branch.outputs.has_lint_errors == 'true' || inputs.fail_on_new_regressions_only == true) }}
   #   needs: [lint-target-branch, lint-pr-branch]
-  #   uses: ./.github/workflows/meta-regression-analysis.yml
+  #   uses: ./.github/workflows/test-meta-regression-analysis.yml
   #   with:
   #     target_branch_passing_items_json: ${{ needs.lint-target-branch.outputs.clean_files_json }}
   #     pr_branch_failing_items_json: ${{ needs.lint-pr-branch.outputs.erroring_files_json }}

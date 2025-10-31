@@ -232,7 +232,7 @@ jobs:
   perform-regression-analysis:
     if: ${{ inputs.target_branch_to_compare != '' }}
     needs: [test-target-branch-storybook, test-pr-branch-storybook]
-    uses: ./.github/workflows/meta-regression-analysis.yml
+    uses: ./.github/workflows/test-meta-regression-analysis.yml
     with:
       item_type_singular: "Storybook story"
       item_type_plural: "Storybook stories"
