@@ -38,7 +38,7 @@ on:
 
 jobs:
   lint:
-    uses: ./.github/workflows/test-ts-lint.yml # Assumes JS/TS linting for Storybook setup
+    uses: ./.github/workflows/js-lint.yml # Assumes JS/TS linting for Storybook setup
     permissions:
       contents: write
 
@@ -208,7 +208,7 @@ jobs:
   compare-results:
     if: ${{ inputs.target_branch_to_compare != '' }}
     needs: [test-target-branch-storybook, test-pr-branch-storybook]
-    uses: ./.github/workflows/regression-test.yml
+    uses: ./.github/workflows/test-regression-analysis.yml
     with:
       runs_on: ${{ inputs.runs_on }}
       baseline_label: ${{ inputs.target_branch_to_compare }}

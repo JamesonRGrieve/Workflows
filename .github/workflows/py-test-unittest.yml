@@ -1,4 +1,4 @@
-name: Reusable Compare xUnit Test Results
+name: Reusable Compare unittest Results
 
 on:
   workflow_call:
@@ -7,18 +7,28 @@ on:
         description: "The target branch to compare against (e.g., main, refs/heads/main)."
         required: true
         type: string
-      dotnet-version:
-        description: ".NET SDK version to use when running xUnit tests."
-        required: false
-        type: string
-        default: "8.0.x"
       python-version:
-        description: "Python version to use for result processing scripts."
+        description: "Python version to use for testing."
         required: false
         type: string
         default: "3.10"
+      start-directory:
+        description: "Directory passed to unittest discovery."
+        required: false
+        type: string
+        default: "."
+      test-pattern:
+        description: "Pattern used by unittest discovery."
+        required: false
+        type: string
+        default: "test*.py"
+      top-level-directory:
+        description: "Optional top level directory for unittest discovery (empty string disables)."
+        required: false
+        type: string
+        default: ""
       working-directory:
-        description: "Directory where xUnit (dotnet test) commands should be executed."
+        description: "Directory where unittest commands should be executed."
         required: false
         type: string
         default: "."
@@ -76,7 +86,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ${{ inputs.working-directory }}
+        working-directory: ${{ inputs['working-directory'] }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
       passed: ${{ steps.extract-results.outputs.passed }}
@@ -96,65 +106,297 @@ jobs:
         with:
           submodules: "recursive"
 
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "${{ inputs.dotnet-version }}"
-
       - name: Set up Python
         uses: actions/setup-python@v5.3.0
         with:
           python-version: "${{ inputs.python-version }}"
 
-      - name: Restore dependencies
+      - name: Set up virtual environment and install dependencies
         run: |
-          echo "Restoring dotnet dependencies..."
-          dotnet restore
+          VENV_PATH="$PWD/.venv"
+          python -m venv "$VENV_PATH"
+          source "$VENV_PATH/bin/activate"
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          echo "VENV_PATH=$VENV_PATH" >> $GITHUB_ENV
 
-      - name: Check for test discovery issues
+      - &prepare-unittest-helper
+        name: Prepare unittest JSON helper
+        run: |
+          cat <<'PY' > "$RUNNER_TEMP/unittest_to_json.py"
+          import argparse
+          import datetime as dt
+          import inspect
+          import json
+          import os
+          import sys
+          import time
+          import traceback
+          import unittest
+          from typing import Any, Dict, Iterable, List, Optional
+
+
+          def iter_tests(suite: unittest.TestSuite) -> Iterable[unittest.TestCase]:
+              for item in suite:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from iter_tests(item)
+                  else:
+                      yield item
+
+
+          def default_nodeid(test: unittest.TestCase) -> str:
+              module = test.__class__.__module__
+              class_name = test.__class__.__name__
+              method = getattr(test, "_testMethodName", str(test))
+              return f"{module}::{class_name}::{method}"
+
+
+          def test_source_file(test: unittest.TestCase) -> Optional[str]:
+              try:
+                  file_path = inspect.getsourcefile(test.__class__)
+              except TypeError:
+                  file_path = None
+              if file_path:
+                  return os.path.relpath(file_path, os.getcwd())
+              return None
+
+
+          class RecordingResult(unittest.TestResult):
+              def __init__(self) -> None:
+                  super().__init__()
+                  self.test_records: List[Dict[str, Any]] = []
+                  self._start_times: Dict[unittest.TestCase, float] = {}
+                  self.summary: Dict[str, int] = {
+                      "passed": 0,
+                      "failed": 0,
+                      "errors": 0,
+                      "skipped": 0,
+                      "xfailed": 0,
+                      "xpassed": 0,
+                  }
+
+              def startTest(self, test: unittest.TestCase) -> None:
+                  self._start_times[test] = time.perf_counter()
+                  super().startTest(test)
+
+              def _finalize_record(
+                  self,
+                  test: unittest.TestCase,
+                  outcome: str,
+                  message: Optional[str] = None,
+              ) -> None:
+                  start = self._start_times.pop(test, None)
+                  duration = time.perf_counter() - start if start is not None else 0.0
+                  nodeid = default_nodeid(test)
+                  record = {
+                      "nodeid": nodeid,
+                      "outcome": outcome,
+                      "duration": duration,
+                      "file": test_source_file(test),
+                  }
+                  if message:
+                      record["longrepr"] = message
+                  self.test_records.append(record)
+
+              def addSuccess(self, test: unittest.TestCase) -> None:
+                  super().addSuccess(test)
+                  self.summary["passed"] += 1
+                  self._finalize_record(test, "passed")
+
+              def addFailure(self, test: unittest.TestCase, err: BaseException) -> None:
+                  super().addFailure(test, err)
+                  self.summary["failed"] += 1
+                  message = self._exc_info_to_string(err, test)
+                  self._finalize_record(test, "failed", message)
+
+              def addError(self, test: unittest.TestCase, err: BaseException) -> None:
+                  super().addError(test, err)
+                  self.summary["errors"] += 1
+                  message = self._exc_info_to_string(err, test)
+                  self._finalize_record(test, "error", message)
+
+              def addSkip(self, test: unittest.TestCase, reason: str) -> None:
+                  super().addSkip(test, reason)
+                  self.summary["skipped"] += 1
+                  self._finalize_record(test, "skipped", reason)
+
+              def addExpectedFailure(self, test: unittest.TestCase, err: BaseException) -> None:
+                  super().addExpectedFailure(test, err)
+                  self.summary["xfailed"] += 1
+                  message = self._exc_info_to_string(err, test)
+                  self._finalize_record(test, "xfailed", message)
+
+              def addUnexpectedSuccess(self, test: unittest.TestCase) -> None:
+                  super().addUnexpectedSuccess(test)
+                  self.summary["xpassed"] += 1
+                  self._finalize_record(test, "failed", "Unexpected success")
+
+
+          def iter_suite(start_dir: str, pattern: str, top_level_dir: Optional[str]) -> Iterable[unittest.TestCase]:
+              loader = unittest.TestLoader()
+              suite = loader.discover(start_dir=start_dir, pattern=pattern, top_level_dir=top_level_dir)
+              return iter_tests(suite)
+
+
+          def run_tests(
+              start_dir: str,
+              pattern: str,
+              top_level_dir: Optional[str],
+              *,
+              dry_run: bool,
+              output: str,
+          ) -> int:
+              top_level_dir = top_level_dir or None
+              try:
+                  tests = list(iter_suite(start_dir, pattern, top_level_dir))
+              except Exception:
+                  error_payload = {
+                      "created": dt.datetime.utcnow().isoformat() + "Z",
+                      "exitcode": 2,
+                      "errors": [traceback.format_exc()],
+                      "summary": {"total": 0, "passed": 0},
+                      "tests": [],
+                  }
+                  with open(output, "w", encoding="utf-8") as fh:
+                      json.dump(error_payload, fh, indent=2)
+                  print("ERROR: failed to discover tests", file=sys.stderr)
+                  return 2
+
+              if dry_run:
+                  payload = {
+                      "created": dt.datetime.utcnow().isoformat() + "Z",
+                      "collected": len(tests),
+                      "tests": [
+                          {
+                              "nodeid": default_nodeid(test),
+                              "file": test_source_file(test),
+                              "doc": test.shortDescription(),
+                          }
+                          for test in tests
+                      ],
+                  }
+                  with open(output, "w", encoding="utf-8") as fh:
+                      json.dump(payload, fh, indent=2)
+                  print(f"Discovered {len(tests)} unittest cases")
+                  return 0
+
+              result = RecordingResult()
+              runner = unittest.TextTestRunner(verbosity=2, resultclass=lambda *_, **__: result)
+              loader = unittest.TestLoader()
+              suite = loader.discover(start_dir=start_dir, pattern=pattern, top_level_dir=top_level_dir)
+              runner.run(suite)
+
+              total = len(result.test_records)
+              passed = result.summary["passed"]
+              summary = {
+                  "total": total,
+                  "passed": passed,
+                  "failed": result.summary["failed"],
+                  "errors": result.summary["errors"],
+                  "skipped": result.summary["skipped"],
+                  "xfailed": result.summary["xfailed"],
+                  "xpassed": result.summary["xpassed"],
+              }
+
+              payload = {
+                  "created": dt.datetime.utcnow().isoformat() + "Z",
+                  "exitcode": 0,
+                  "summary": summary,
+                  "tests": result.test_records,
+              }
+
+              with open(output, "w", encoding="utf-8") as fh:
+                  json.dump(payload, fh, indent=2)
+
+              print(
+                  "Test run complete: total={total} passed={passed} failed={failed} errors={errors} skipped={skipped}".format(
+                      total=summary["total"],
+                      passed=summary["passed"],
+                      failed=summary["failed"],
+                      errors=summary["errors"],
+                      skipped=summary["skipped"],
+                  )
+              )
+              return 0 if result.wasSuccessful() else 1
+
+
+          def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+              parser = argparse.ArgumentParser(
+                  description="Run unittest discovery with JSON output"
+              )
+              parser.add_argument("--start-directory", default=".")
+              parser.add_argument("--pattern", default="test*.py")
+              parser.add_argument("--top-level-directory", default=None)
+              parser.add_argument("--output", required=True)
+              parser.add_argument("--collect-only", action="store_true")
+              return parser.parse_args(argv)
+
+
+          def main(argv: Optional[List[str]] = None) -> int:
+              args = parse_args(argv)
+              top_level = args.top_level_directory or None
+              return run_tests(
+                  start_dir=args.start_directory,
+                  pattern=args.pattern,
+                  top_level_dir=top_level,
+                  dry_run=args.collect_only,
+                  output=args.output,
+              )
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PY
+          echo "UNITTEST_JSON_HELPER=$RUNNER_TEMP/unittest_to_json.py" >> $GITHUB_ENV
+
+      - name: Check for test collection errors
         id: check-collection
         run: |
-          echo "Running dotnet test --list-tests to verify discovery..."
-          set +e
-          dotnet test --list-tests > collection_output.txt 2>&1
-          LIST_EXIT_CODE=$?
-          set -e
+          echo "Running unittest collection check..."
+          source "$VENV_PATH/bin/activate"
 
-          # Set default values
           HAS_COLLECTION_ERRORS="false"
           NO_TESTS_FOUND="false"
           ERROR_TYPE="none"
           ERROR_DETAILS="none"
 
-          if [ "$LIST_EXIT_CODE" -ne 0 ]; then
-            echo "::error::Test discovery command failed in PR branch"
+          set +e
+          python "$UNITTEST_JSON_HELPER" \
+            --collect-only \
+            --start-directory "${{ inputs['start-directory'] }}" \
+            --pattern "${{ inputs['test-pattern'] }}" \
+            --top-level-directory "${{ inputs['top-level-directory'] }}" \
+            --output unittest_collection.json > collection_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
             HAS_COLLECTION_ERRORS="true"
-            ERROR_TYPE="DiscoveryCommandFailed"
-            ERROR_DETAILS=$(head -n 200 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            ERROR_TYPE="CollectionError"
+            ERROR_DETAILS=$(head -40 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            echo "::error::Unittest discovery failed in the PR branch (${ERROR_DETAILS:0:200}...)"
           else
-            echo "dotnet test --list-tests executed successfully"
-
-            if grep -qi "Test Run Aborted" collection_output.txt || grep -qi "Test host process exited unexpectedly" collection_output.txt; then
-              echo "::error::Discovery encountered runtime errors"
-              HAS_COLLECTION_ERRORS="true"
-              ERROR_TYPE="RuntimeDiscoveryError"
-              ERROR_DETAILS=$(head -n 200 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            if [ -f unittest_collection.json ]; then
+              TEST_COUNT=$(python - <<'PY'
+              import json
+              with open('unittest_collection.json', 'r', encoding='utf-8') as handle:
+                  payload = json.load(handle)
+              print(len(payload.get('tests', [])))
+              PY
+              )
             else
-              TEST_COUNT=$(grep -Eo "Total tests: [0-9]+" collection_output.txt | tail -1 | awk '{print $3}')
+              TEST_COUNT=0
+            fi
 
-              if [[ -z "$TEST_COUNT" ]]; then
-                # Attempt to count listed tests as fallback
-                TEST_COUNT=$(grep -c "^    " collection_output.txt || echo "0")
-              fi
-
-              if grep -qi "No test is available" collection_output.txt || [[ -z "$TEST_COUNT" || "$TEST_COUNT" == "0" ]]; then
-                echo "::warning::No tests were found in the PR branch"
-                NO_TESTS_FOUND="true"
-                ERROR_TYPE="NoTestsFound"
-                ERROR_DETAILS="No tests were discovered by dotnet test --list-tests"
-              else
-                echo "Found $TEST_COUNT tests in PR branch"
-              fi
+            if [ -z "$TEST_COUNT" ] || [ "$TEST_COUNT" = "0" ]; then
+              NO_TESTS_FOUND="true"
+              ERROR_TYPE="NoTestsFound"
+              ERROR_DETAILS="unittest discovery did not find any tests"
+              echo "::warning::No unittest tests were found in the PR branch"
+            else
+              echo "Found $TEST_COUNT unittest test(s) in the PR branch"
             fi
           fi
 
@@ -183,20 +425,23 @@ jobs:
       - name: Run tests on PR Branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          echo "Running xUnit tests on PR branch (via dotnet test)..."
-          mkdir -p TestResults
-          dotnet test --logger "trx;LogFileName=pr_results.trx" --results-directory TestResults --verbosity normal > test_output.txt 2>&1 || true
+          echo "Running unittest suite on PR branch..."
+          source "$VENV_PATH/bin/activate"
 
-          if [ -f TestResults/pr_results.trx ]; then
-            echo "✅ Test execution completed"
+          set +e
+          python "$UNITTEST_JSON_HELPER" \
+            --start-directory "${{ inputs['start-directory'] }}" \
+            --pattern "${{ inputs['test-pattern'] }}" \
+            --top-level-directory "${{ inputs['top-level-directory'] }}" \
+            --output pr_results.json > test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ -s pr_results.json ]; then
+            echo "✅ Test execution completed (exit code: $EXIT_CODE)"
           else
-            echo "❌ Test execution failed"
+            echo "❌ Test execution failed (exit code: $EXIT_CODE)"
           fi
-
-      - name: Convert TRX results to JSON
-        if: steps.check-collection.outputs.has_collection_errors != 'true'
-        run: |
-          python "$GITHUB_WORKSPACE/.github/scripts/trx_to_pytest_json.py" TestResults/pr_results.trx pr_results.json
 
       - name: Extract test results and create artifacts
         id: extract-results
@@ -313,15 +558,6 @@ jobs:
           print(f'Xfailed tests: {len(xfailed_tests)}')
           print(f'All discovered tests: {len(all_tests)}')
 
-          # Set scalar outputs only (no large arrays)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'total={pr_total}\\n')
-              f.write(f'passed={pr_passed}\\n')
-              f.write(f'percentage={pr_percentage:.2f}\\n')
-              f.write(f'failing_count={len(failing_tests)}\\n')
-              f.write(f'skipped_count={len(skipped_tests)}\\n')
-              f.write(f'xfailed_count={len(xfailed_tests)}\\n')
-
           # Extract warnings from test output
           warnings_list = []
           try:
@@ -378,6 +614,15 @@ jobs:
 
           print('Test data saved to pr_test_data.json for artifact')
           print('Results extraction completed')
+
+          # Set scalar outputs only (no large arrays)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={pr_total}\\n')
+              f.write(f'passed={pr_passed}\\n')
+              f.write(f'percentage={pr_percentage:.2f}\\n')
+              f.write(f'failing_count={len(failing_tests)}\\n')
+              f.write(f'skipped_count={len(skipped_tests)}\\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\\n')
           "
 
           echo "✅ Test results: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} passed (${{ steps.extract-results.outputs.percentage }}%)"
@@ -391,6 +636,8 @@ jobs:
             pr_test_data.json
             test_output.txt
             pr_results.json
+            collection_output.txt
+            unittest_collection.json
           retention-days: 3
           if-no-files-found: ignore
 
@@ -399,7 +646,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ${{ inputs.working-directory }}
+        working-directory: ${{ inputs['working-directory'] }}
     outputs:
       total: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.total || steps.extract-results.outputs.total }}
       passed: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passed || steps.extract-results.outputs.passed }}
@@ -418,71 +665,76 @@ jobs:
           submodules: "recursive"
           ref: ${{ inputs.target_branch_to_compare }}
 
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "${{ inputs.dotnet-version }}"
-
       - name: Set up Python
         uses: actions/setup-python@v5.3.0
         with:
           python-version: "${{ inputs.python-version }}"
 
-      - name: Restore dependencies
+      - name: Set up virtual environment and install dependencies
         run: |
-          echo "Restoring dotnet dependencies on target branch..."
-          dotnet restore
+          VENV_PATH="$PWD/.venv"
+          python -m venv "$VENV_PATH"
+          source "$VENV_PATH/bin/activate"
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          echo "VENV_PATH=$VENV_PATH" >> $GITHUB_ENV
 
-      - name: Check for test discovery issues
+      - *prepare-unittest-helper
+
+      - name: Check for test collection errors
         id: check-collection
         run: |
           # Create verbose debug file for artifact
           exec 3>&1 4>&2
           exec 1> >(tee -a debug_target_collection.log) 2>&1
 
-          echo "Running dotnet test --list-tests on target branch..."
-          set +e
-          dotnet test --list-tests > collection_output.txt 2>&1
-          LIST_EXIT_CODE=$?
-          set -e
+          echo "Running unittest collection check on target branch..."
+          source "$VENV_PATH/bin/activate"
 
-          # Restore stdout/stderr for GitHub Actions
-          exec 1>&3 2>&4
-
-          # Set default values
           HAS_COLLECTION_ERRORS="false"
           NO_TESTS_FOUND="false"
           ERROR_TYPE="none"
           ERROR_DETAILS="none"
 
-          if [ "$LIST_EXIT_CODE" -ne 0 ]; then
-            echo "::warning::Test discovery command failed on target branch"
+          set +e
+          python "$UNITTEST_JSON_HELPER" \
+            --collect-only \
+            --start-directory "${{ inputs['start-directory'] }}" \
+            --pattern "${{ inputs['test-pattern'] }}" \
+            --top-level-directory "${{ inputs['top-level-directory'] }}" \
+            --output unittest_collection.json > collection_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          exec 1>&3 2>&4
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
             HAS_COLLECTION_ERRORS="true"
-            ERROR_TYPE="DiscoveryCommandFailed"
-            ERROR_DETAILS=$(head -n 200 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            ERROR_TYPE="CollectionError"
+            ERROR_DETAILS=$(head -40 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            echo "::warning::Unittest discovery failed on the target branch (${ERROR_DETAILS:0:200}...)"
           else
-            echo "dotnet test --list-tests executed successfully on target branch"
-
-            if grep -qi "Test Run Aborted" collection_output.txt || grep -qi "Test host process exited unexpectedly" collection_output.txt; then
-              echo "::warning::Discovery encountered runtime errors on target branch"
-              HAS_COLLECTION_ERRORS="true"
-              ERROR_TYPE="RuntimeDiscoveryError"
-              ERROR_DETAILS=$(head -n 200 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            if [ -f unittest_collection.json ]; then
+              TEST_COUNT=$(python - <<'PY'
+              import json
+              with open('unittest_collection.json', 'r', encoding='utf-8') as handle:
+                  payload = json.load(handle)
+              print(len(payload.get('tests', [])))
+              PY
+              )
             else
-              TEST_COUNT=$(grep -Eo "Total tests: [0-9]+" collection_output.txt | tail -1 | awk '{print $3}')
+              TEST_COUNT=0
+            fi
 
-              if [[ -z "$TEST_COUNT" ]]; then
-                TEST_COUNT=$(grep -c "^    " collection_output.txt || echo "0")
-              fi
-
-              if grep -qi "No test is available" collection_output.txt || [[ -z "$TEST_COUNT" || "$TEST_COUNT" == "0" ]]; then
-                echo "::warning::No tests were found in the target branch"
-                NO_TESTS_FOUND="true"
-                ERROR_TYPE="NoTestsFound"
-                ERROR_DETAILS="No tests were discovered by dotnet test --list-tests on the target branch"
-              else
-                echo "Found $TEST_COUNT tests in target branch"
-              fi
+            if [ -z "$TEST_COUNT" ] || [ "$TEST_COUNT" = "0" ]; then
+              NO_TESTS_FOUND="true"
+              ERROR_TYPE="NoTestsFound"
+              ERROR_DETAILS="unittest discovery did not find any tests on the target branch"
+              echo "::warning::No unittest tests were found in the target branch"
+            else
+              echo "Found $TEST_COUNT unittest test(s) in the target branch"
             fi
           fi
 
@@ -506,20 +758,23 @@ jobs:
       - name: Run tests on target branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          echo "Running xUnit tests on target branch (via dotnet test)..."
-          mkdir -p TestResults
-          dotnet test --logger "trx;LogFileName=target_results.trx" --results-directory TestResults --verbosity normal > target_test_output.txt 2>&1 || true
+          echo "Running unittest suite on target branch..."
+          source "$VENV_PATH/bin/activate"
 
-          if [ -f TestResults/target_results.trx ]; then
-            echo "✅ Test execution completed"
+          set +e
+          python "$UNITTEST_JSON_HELPER" \
+            --start-directory "${{ inputs['start-directory'] }}" \
+            --pattern "${{ inputs['test-pattern'] }}" \
+            --top-level-directory "${{ inputs['top-level-directory'] }}" \
+            --output target_results.json > target_test_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ -s target_results.json ]; then
+            echo "✅ Test execution completed (exit code: $EXIT_CODE)"
           else
-            echo "❌ Test execution failed"
+            echo "❌ Test execution failed (exit code: $EXIT_CODE)"
           fi
-
-      - name: Convert target TRX results to JSON
-        if: steps.check-collection.outputs.has_collection_errors != 'true'
-        run: |
-          python "$GITHUB_WORKSPACE/.github/scripts/trx_to_pytest_json.py" TestResults/target_results.trx target_results.json
 
       - name: Extract test results and create artifacts
         id: extract-results
@@ -617,13 +872,6 @@ jobs:
           print(f'Passing tests: {len(passing_tests)}')
           print(f'All discovered tests: {len(all_tests)}')
 
-          # Set scalar outputs only (no large arrays)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'total={target_total}\\n')
-              f.write(f'passed={target_passed}\\n')
-              f.write(f'percentage={target_percentage:.2f}\\n')
-              f.write(f'passing_count={len(passing_tests)}\\n')
-
           # Extract warnings from test output
           warnings_list = []
           try:
@@ -678,6 +926,13 @@ jobs:
 
           print('Test data saved to target_test_data.json for artifact')
           print('Results extraction completed')
+
+          # Set scalar outputs only (no large arrays)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={target_total}\\n')
+              f.write(f'passed={target_passed}\\n')
+              f.write(f'percentage={target_percentage:.2f}\\n')
+              f.write(f'passing_count={len(passing_tests)}\\n')
           "
 
           # Restore stdout/stderr for GitHub Actions
@@ -694,6 +949,10 @@ jobs:
             target_test_data.json
             target_test_output.txt
             target_results.json
+            collection_output.txt
+            unittest_collection.json
+            debug_target_collection.log
+            debug_target_extract_results.log
           retention-days: 3
           if-no-files-found: ignore
 
@@ -710,7 +969,7 @@ jobs:
 
   compare-results:
     needs: [test-source-branch, test-target-branch]
-    uses: ./.github/workflows/regression-test.yml
+    uses: ./.github/workflows/test-regression-analysis.yml
     with:
       runs_on: ${{ inputs.runs_on }}
       baseline_label: ${{ inputs.target_branch_to_compare }}
@@ -950,7 +1209,7 @@ jobs:
           exec 1>&3 2>&4
 
           # Make this a standard echo for better visibility of the final list
-          echo "Final Ping Keys Output (GitHub Logins from test-cs-dotnet.yml): [$PING_KEYS_OUTPUT]"
+          echo "Final Ping Keys Output (GitHub Logins from test-py-unittest.yml): [$PING_KEYS_OUTPUT]"
           echo "ping_user_ids_out=$PING_KEYS_OUTPUT" >> $GITHUB_OUTPUT
 
           # Store branch names in variables with proper quoting
@@ -958,7 +1217,7 @@ jobs:
           TARGET_BRANCH="${TARGET_BRANCH_NAME:-unknown}"
 
           # 2. Construct Message Body
-          MESSAGE_LINES+=("**Dotnet Test Comparison & Regression Analysis for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
+          MESSAGE_LINES+=("**Pytest Comparison & Regression Analysis for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
           MESSAGE_LINES+=("Branch: [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) against [\`${TARGET_BRANCH}\`](${REPO_URL}/tree/${TARGET_BRANCH})")
           MESSAGE_LINES+=("---")
 
@@ -989,7 +1248,7 @@ jobs:
             MESSAGE_LINES+=("  - See attached file for detailed error information.")
           elif [[ "$PR_NO_TESTS_FOUND" == "true" ]]; then
             MESSAGE_LINES+=("**:warning: WARNING: No Tests Found in PR Branch (\`${PR_BRANCH}\`)**")
-            MESSAGE_LINES+=("  - dotnet test did not discover any runnable tests.")
+            MESSAGE_LINES+=("  - Pytest did not discover any test files matching its patterns.")
             MESSAGE_LINES+=("  - Ensure your test files are correctly named (e.g., \`test_*.py\` or \`*_test.py\`) and located.")
           fi
 
@@ -1003,9 +1262,11 @@ jobs:
               PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               FAIL_SKIP_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-SKIP IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              FAIL_PASS_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-PASS IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+              NEW_TESTS_COUNT=$(grep -o "NEW TESTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
               
                              # Add category summaries (≤5 show paths, >5 show count + refer to file)
                if [[ "$PASS_FAIL_COUNT" -gt 0 ]]; then
@@ -1032,17 +1293,29 @@ jobs:
                  fi
                fi
                
-               if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
-                 if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -le 5 ]]; then
-                   MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements ($FAIL_SKIP_IMPROVEMENTS_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
-                   for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("• \`$test_path\`")
-                   done
-                 else
-                   MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements:** $FAIL_SKIP_IMPROVEMENTS_COUNT tests (see attached file)")
-                 fi
-               fi
+              if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+                if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements ($FAIL_SKIP_IMPROVEMENTS_COUNT):**")
+                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
+                  for test_path in "${test_paths[@]}"; do
+                    MESSAGE_LINES+=("• \`$test_path\`")
+                  done
+                else
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements:** $FAIL_SKIP_IMPROVEMENTS_COUNT tests (see attached file)")
+                fi
+              fi
+
+              if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+                if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements ($FAIL_PASS_IMPROVEMENTS_COUNT):**")
+                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-PASS IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_PASS_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
+                  for test_path in "${test_paths[@]}"; do
+                    MESSAGE_LINES+=("• \`$test_path\`")
+                  done
+                else
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements:** $FAIL_PASS_IMPROVEMENTS_COUNT tests (see attached file)")
+                fi
+              fi
                
                if [[ "$PASS_GONE_COUNT" -gt 0 ]]; then
                  if [[ "$PASS_GONE_COUNT" -le 5 ]]; then
@@ -1076,6 +1349,18 @@ jobs:
                   MESSAGE_LINES+=("**Discovery Warnings:** $DISCOVERY_COUNT warnings (see attached file)")
                 fi
               fi
+
+              if [[ "$NEW_TESTS_COUNT" -gt 0 ]]; then
+                if [[ "$NEW_TESTS_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=(":sparkles: **New Tests ($NEW_TESTS_COUNT):**")
+                  readarray -t test_paths < <(grep -A 100 "NEW TESTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$NEW_TESTS_COUNT | sed 's/^  [0-9]\+\. //')
+                  for test_path in "${test_paths[@]}"; do
+                    MESSAGE_LINES+=("• \`$test_path\`")
+                  done
+                else
+                  MESSAGE_LINES+=(":sparkles: **New Tests:** $NEW_TESTS_COUNT tests (see attached file)")
+                fi
+              fi
               
             else
               # Fallback to simple regression count
@@ -1091,6 +1376,52 @@ jobs:
              MESSAGE_LINES+=("**:white_check_mark: NO REGRESSIONS DETECTED**")
              MESSAGE_LINES+=("  - PR Branch (\`${PR_BRANCH}\`): **${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} passed (${PR_PERCENTAGE}%)**")
              MESSAGE_LINES+=("  - Target Branch (\`${TARGET_BRANCH}\`): **${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} passed (${TARGET_PERCENTAGE}%)**")
+          fi
+
+          if [[ "$HAS_REGRESSIONS" != "true" ]] && [ -f "comprehensive_regression_report.txt" ]; then
+            FAIL_SKIP_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-SKIP IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+            FAIL_PASS_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-PASS IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+            NEW_TESTS_COUNT=$(grep -o "NEW TESTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
+
+            if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 || "$FAIL_PASS_IMPROVEMENTS_COUNT" -gt 0 || "$NEW_TESTS_COUNT" -gt 0 ]]; then
+              MESSAGE_LINES+=("**:sparkles: Improvements & Additions**")
+
+              if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+                if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements ($FAIL_SKIP_IMPROVEMENTS_COUNT):**")
+                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
+                  for test_path in "${test_paths[@]}"; do
+                    MESSAGE_LINES+=("• \`$test_path\`")
+                  done
+                else
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements:** $FAIL_SKIP_IMPROVEMENTS_COUNT tests (see attached file)")
+                fi
+              fi
+
+              if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -gt 0 ]]; then
+                if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements ($FAIL_PASS_IMPROVEMENTS_COUNT):**")
+                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-PASS IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_PASS_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
+                  for test_path in "${test_paths[@]}"; do
+                    MESSAGE_LINES+=("• \`$test_path\`")
+                  done
+                else
+                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements:** $FAIL_PASS_IMPROVEMENTS_COUNT tests (see attached file)")
+                fi
+              fi
+
+              if [[ "$NEW_TESTS_COUNT" -gt 0 ]]; then
+                if [[ "$NEW_TESTS_COUNT" -le 5 ]]; then
+                  MESSAGE_LINES+=(":sparkles: **New Tests ($NEW_TESTS_COUNT):**")
+                  readarray -t test_paths < <(grep -A 100 "NEW TESTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$NEW_TESTS_COUNT | sed 's/^  [0-9]\+\. //')
+                  for test_path in "${test_paths[@]}"; do
+                    MESSAGE_LINES+=("• \`$test_path\`")
+                  done
+                else
+                  MESSAGE_LINES+=(":sparkles: **New Tests:** $NEW_TESTS_COUNT tests (see attached file)")
+                fi
+              fi
+            fi
           fi
 
           MESSAGE_LINES+=("---")
@@ -1112,7 +1443,7 @@ jobs:
             FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
           fi
 
-          echo "Final message body prepared in test-cs-dotnet.yml"
+          echo "Final message body prepared in test-py-unittest.yml"
 
           echo "message_body_out<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_MESSAGE_BODY" >> $GITHUB_OUTPUT

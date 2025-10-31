@@ -1,4 +1,4 @@
-name: Reusable Compare Jest Results
+name: Reusable Compare Pytest Results
 
 on:
   workflow_call:
@@ -7,31 +7,11 @@ on:
         description: "The target branch to compare against (e.g., main, refs/heads/main)."
         required: true
         type: string
-      node-version:
-        description: "Node.js version to use for testing."
+      python-version:
+        description: "Python version to use for testing."
         required: false
         type: string
-        default: "18"
-      install-command:
-        description: "Optional command to install dependencies (defaults to npm/pnpm/yarn auto-detection)."
-        required: false
-        type: string
-        default: ""
-      jest-command:
-        description: "Base command used to invoke Jest (e.g., npx jest, pnpm exec jest)."
-        required: false
-        type: string
-        default: "npx jest"
-      jest-extra-args:
-        description: "Additional arguments to pass to the Jest command (applied before workflow-managed flags)."
-        required: false
-        type: string
-        default: "--runInBand"
-      working-directory:
-        description: "Directory where install and test commands should be executed."
-        required: false
-        type: string
-        default: "."
+        default: "3.10"
       ping_latest_committer:
         description: "If true, the latest committer on the PR will be added to the ping list."
         required: false
@@ -102,107 +82,94 @@ jobs:
         with:
           submodules: "recursive"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5.3.0
         with:
-          node-version: "${{ inputs['node-version'] }}"
+          python-version: "${{ inputs.python-version }}"
 
       - name: Install dependencies
         run: |
-          set -e
-          if command -v corepack >/dev/null 2>&1; then
-            corepack enable >/dev/null 2>&1 || true
+          python -m pip install --upgrade pip
+          pip install pytest pytest-json-report pytest-asyncio
+          if [ -f requirements.txt ]; then 
+            pip install -r requirements.txt
           fi
-
-          INSTALL_COMMAND="${{ inputs['install-command'] }}"
-          if [ -n "$INSTALL_COMMAND" ]; then
-            echo "Running custom install command: $INSTALL_COMMAND"
-            eval "$INSTALL_COMMAND"
-          elif [ -f package-lock.json ]; then
-            echo "Detected package-lock.json; running npm ci"
-            npm ci
-          elif [ -f yarn.lock ]; then
-            if command -v yarn >/dev/null 2>&1; then
-              echo "Detected yarn.lock; running yarn install --frozen-lockfile"
-              yarn install --frozen-lockfile
-            else
-              echo "::warning::yarn.lock detected but yarn is unavailable. Falling back to npm install."
-              npm install
-            fi
-          elif [ -f pnpm-lock.yaml ]; then
-            if command -v pnpm >/dev/null 2>&1; then
-              echo "Detected pnpm-lock.yaml; running pnpm install --frozen-lockfile"
-              pnpm install --frozen-lockfile
-            else
-              echo "::warning::pnpm-lock.yaml detected but pnpm is unavailable. Falling back to npm install."
-              npm install
-            fi
-          else
-            echo "No lockfile detected; running npm install"
-            npm install
-          fi
-        working-directory: ${{ inputs['working-directory'] }}
+          cd src
 
       - name: Check for test collection errors
         id: check-collection
         run: |
-          echo "Running Jest collection check..."
+          echo "Running pytest collection check..."
+          python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
+
+          # Set default values
           HAS_COLLECTION_ERRORS="false"
           NO_TESTS_FOUND="false"
           ERROR_TYPE="none"
           ERROR_DETAILS="none"
 
-          JEST_COMMAND="${{ inputs['jest-command'] }}"
-          JEST_EXTRA_ARGS="${{ inputs['jest-extra-args'] }}"
-          COLLECTION_COMMAND="$JEST_COMMAND $JEST_EXTRA_ARGS --listTests"
-
-          echo "Executing: $COLLECTION_COMMAND"
-
-          set +e
-          eval "$COLLECTION_COMMAND" > collection_output.txt 2>&1
-          EXIT_CODE=$?
-          set -e
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            HAS_COLLECTION_ERRORS="true"
-            if grep -qi "Cannot find module" collection_output.txt; then
+          if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
+            echo "::error::Test discovery errors detected in PR branch - Python modules could not be imported correctly"
+            
+            # Attempt to identify specific error type
+            if grep -q "ImportError" collection_output.txt; then
+              ERROR_TYPE="ImportError"
+            elif grep -q "ModuleNotFoundError" collection_output.txt; then
               ERROR_TYPE="ModuleNotFoundError"
-            elif grep -qi "SyntaxError" collection_output.txt; then
+            elif grep -q "SyntaxError" collection_output.txt; then
               ERROR_TYPE="SyntaxError"
-            elif grep -qi "TypeError" collection_output.txt; then
-              ERROR_TYPE="TypeError"
-            elif grep -qi "ReferenceError" collection_output.txt; then
-              ERROR_TYPE="ReferenceError"
-            else
-              ERROR_TYPE="ExecutionError"
+            elif grep -q "ERROR collecting" collection_output.txt; then
+              ERROR_TYPE="CollectionError"
+            elif grep -q "Interrupted:" collection_output.txt; then
+              ERROR_TYPE="Interrupted"
+            else 
+              ERROR_TYPE="UnknownError"
             fi
-
-            ERROR_DETAILS=$(head -40 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-            echo "::error::Test discovery errors detected in PR branch via Jest ($ERROR_TYPE)"
-            echo "::error::First details: ${ERROR_DETAILS:0:200}..."
+            
+            echo "PR branch discovery error type: $ERROR_TYPE"
+            
+            ERROR_FILE=$(grep -o "ERROR collecting.*\.py" collection_output.txt | grep -o "[a-zA-Z0-9_/]*\.py" || echo "Unknown file")
+            
+            if [[ "$ERROR_FILE" != "Unknown file" ]]; then
+              echo "Error in file $ERROR_FILE"
+              grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            else
+              grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            fi
+            
+            echo "::error::PR branch discovery error details: ${ERROR_DETAILS:0:200}..."
+            HAS_COLLECTION_ERRORS="true"
           else
-            TEST_COUNT=$(grep -cv '^[[:space:]]*$' collection_output.txt || echo "0")
-            if [ "$TEST_COUNT" = "0" ]; then
+            echo "No discovery errors detected in PR branch"
+            
+            TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
+            
+            if [[ "$TEST_COUNT" == "0" ]]; then
+              echo "::warning::No tests were found in the PR branch"
               NO_TESTS_FOUND="true"
               ERROR_TYPE="NoTestsFound"
-              ERROR_DETAILS="Jest --listTests did not return any test files"
-              echo "::warning::No tests were found in the PR branch"
-            else
-              echo "Found $TEST_COUNT test file(s) in PR branch"
+              ERROR_DETAILS="No test files were discovered that match pytest's test discovery pattern"
+            else  
+              echo "Found $TEST_COUNT tests in PR branch"
             fi
           fi
 
+          # Set all the outputs
           echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
           echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
           echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
           echo "error_details=$ERROR_DETAILS" >> $GITHUB_OUTPUT
 
+          # For backward compatibility
           if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
             echo "has_errors=true" >> $GITHUB_OUTPUT
           else
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
+          # Clean summary output
           if [[ "$HAS_COLLECTION_ERRORS" == "true" ]]; then
             echo "❌ Discovery Error: $ERROR_TYPE"
           elif [[ "$NO_TESTS_FOUND" == "true" ]]; then
@@ -210,190 +177,202 @@ jobs:
           else
             echo "✅ Discovery Success"
           fi
-        working-directory: ${{ inputs['working-directory'] }}
 
       - name: Run tests on PR Branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          echo "Running Jest tests on PR branch..."
-          JEST_COMMAND="${{ inputs['jest-command'] }}"
-          JEST_EXTRA_ARGS="${{ inputs['jest-extra-args'] }}"
-          TEST_COMMAND="$JEST_COMMAND $JEST_EXTRA_ARGS --json --outputFile=pr_results.json --testLocationInResults"
-          echo "Executing: $TEST_COMMAND"
-
-          set +e
-          eval "$TEST_COMMAND" > test_output.txt 2>&1
-          EXIT_CODE=$?
-          set -e
+          echo "Running tests on PR branch..."
+          python -m pytest -vv --json-report --json-report-file=pr_results.json --tb=short > test_output.txt 2>&1 || true
 
           if [ -f pr_results.json ]; then
-            echo "✅ Test execution completed (exit code: $EXIT_CODE)"
+            echo "✅ Test execution completed"
           else
-            echo "❌ Test execution did not produce pr_results.json (exit code: $EXIT_CODE)"
+            echo "❌ Test execution failed"
           fi
-        working-directory: ${{ inputs['working-directory'] }}
 
       - name: Extract test results and create artifacts
         id: extract-results
         run: |
           echo "PR_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_ENV
 
-          node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
+          python -c "
+          import json
+          import sys
+          import os
 
-          const resultsPath = path.resolve(process.cwd(), 'pr_results.json');
-          let prTotal = 0;
-          let prPassed = 0;
-          let prPercentage = 0;
-          const passingTests = [];
-          const failingTests = [];
-          const skippedTests = [];
-          const xfailedTests = [];
-          const skippedTestsWithReasons = {};
-          const xfailedTestsWithReasons = {};
-          const allTests = [];
-          let warningsList = [];
+          # Default values in case file doesn't exist or is invalid
+          pr_total = 0
+          pr_passed = 0
+          pr_percentage = 0
+          failing_tests = []
+          skipped_tests = []
+          xfailed_tests = []
+          all_tests = []
+          passing_tests = []
+          skipped_tests_with_reasons = {}
+          xfailed_tests_with_reasons = {}
 
-          const safeRead = (filePath) => {
-            try {
-              return fs.readFileSync(filePath, 'utf-8');
-            } catch (error) {
-              return null;
-            }
-          };
+          try:
+              print('Attempting to open pr_results.json')
+              with open('pr_results.json') as f:
+                  pr_results = json.load(f)
+                  print(f'JSON loaded successfully, keys: {list(pr_results.keys())}')
+              
+              # Check for collection errors by looking at exitcode or error patterns
+              if pr_results.get('exitcode', 0) > 1:
+                  print('Detected non-zero exitcode, likely a collection error')
+                  if 'collectors' in pr_results and pr_results['collectors']:
+                      print(f'Collection errors found: {pr_results["collectors"]}')
+                  pr_total = 0  # Explicitly set to 0 - no tests run when collection fails
+                  pr_passed = 0
+              elif 'summary' in pr_results and isinstance(pr_results['summary'], dict):
+                  # Normal case - extract data from summary
+                  summary = pr_results['summary']
+                  pr_total = summary.get('total', 0)
+                  pr_passed = summary.get('passed', 0)
+                  print(f'Results extracted from summary - Total: {pr_total}, Passed: {pr_passed}')
+                  
+                  # Extract all tests by outcome and collect all test nodeids with reasons
+                  if 'tests' in pr_results:
+                      print('Extracting failing, skipped, xfailed, and all tests with reasons')
+                      for test in pr_results['tests']:
+                          outcome = test.get('outcome')
+                          nodeid = test.get('nodeid', '')
+                          if nodeid:
+                              all_tests.append(nodeid)  # Track all tests regardless of outcome
+                              if outcome == 'passed':
+                                  passing_tests.append(nodeid)
+                              elif outcome in ['failed', 'error']:
+                                  failing_tests.append(nodeid)
+                              elif outcome == 'skipped':
+                                  skipped_tests.append(nodeid)
+                                  # Extract skip reason
+                                  skip_reason = 'No reason provided'
+                                  if 'longrepr' in test and test['longrepr']:
+                                      # longrepr can be a string or list, handle both
+                                      longrepr = test['longrepr']
+                                      if isinstance(longrepr, list) and longrepr:
+                                          skip_reason = str(longrepr[0]) if longrepr[0] else 'No reason provided'
+                                      elif isinstance(longrepr, str):
+                                          skip_reason = longrepr
+                                  elif 'call' in test and test['call'] and 'longrepr' in test['call']:
+                                      skip_reason = str(test['call']['longrepr'])
+                                  skipped_tests_with_reasons[nodeid] = skip_reason.strip()
+                              elif outcome == 'xfailed':
+                                  xfailed_tests.append(nodeid)
+                                  # Extract xfail reason
+                                  xfail_reason = 'No reason provided'
+                                  if 'longrepr' in test and test['longrepr']:
+                                      longrepr = test['longrepr']
+                                      if isinstance(longrepr, list) and longrepr:
+                                          xfail_reason = str(longrepr[0]) if longrepr[0] else 'No reason provided'
+                                      elif isinstance(longrepr, str):
+                                          xfail_reason = longrepr
+                                  elif 'call' in test and test['call'] and 'longrepr' in test['call']:
+                                      xfail_reason = str(test['call']['longrepr'])
+                                  xfailed_tests_with_reasons[nodeid] = xfail_reason.strip()
+                      
+                      print(f'Found {len(passing_tests)} passing tests')
+                      print(f'Found {len(failing_tests)} failing tests')
+                      print(f'Found {len(skipped_tests)} skipped tests')
+                      print(f'Found {len(xfailed_tests)} xfailed tests')
+                      print(f'Found {len(all_tests)} total discovered tests')
+              else:
+                  print('No valid summary structure found')
+              
+              # Calculate percentage safely
+              pr_percentage = (pr_passed / pr_total * 100) if pr_total > 0 else 0
+              print(f'Pass percentage calculated: {pr_percentage:.2f}%')
+              
+          except FileNotFoundError as e:
+              print(f'File not found error: {e}')
+          except KeyError as e:
+              print(f'Missing key in results file: {e}')
+              if 'pr_results' in locals():
+                  print(f'Available keys: {list(pr_results.keys())}')
+                  if 'summary' in pr_results:
+                      print(f'Summary structure: {pr_results["summary"]}')
+          except Exception as e:
+              print(f'Error processing results: {e}')
+              import traceback
+              print(f'Full exception: {traceback.format_exc()}')
 
-          const rawResults = safeRead(resultsPath);
+          print(f'Total tests: {pr_total}')
+          print(f'Passed tests: {pr_passed}')
+          print(f'Pass percentage: {pr_percentage:.2f}%')
+          print(f'Failing tests: {len(failing_tests)}')
+          print(f'Skipped tests: {len(skipped_tests)}')
+          print(f'Xfailed tests: {len(xfailed_tests)}')
+          print(f'All discovered tests: {len(all_tests)}')
 
-          if (rawResults) {
-            try {
-              const data = JSON.parse(rawResults);
-              if (typeof data.numTotalTests === 'number') {
-                prTotal = data.numTotalTests;
-              }
-              if (typeof data.numPassedTests === 'number') {
-                prPassed = data.numPassedTests;
-              }
+          # Extract warnings from test output
+          warnings_list = []
+          try:
+              with open('test_output.txt', 'r') as f:
+                  content = f.read()
+                  # Extract warnings section
+                  if '============================== warnings summary ===============================' in content:
+                      warnings_section = content.split('============================== warnings summary ===============================')[1]
+                      if '-- Docs:' in warnings_section:
+                          warnings_section = warnings_section.split('-- Docs:')[0]
+                      
+                      # Parse warnings - format is file path followed by indented warning details
+                      lines = warnings_section.split('\\n')
+                      current_warning_group = []
+                      
+                      for line in lines:
+                          line = line.rstrip()
+                          if not line or line.startswith('='):
+                              continue
+                          
+                          # Check if this is a file path (starts at column 0, ends with .py: or contains warning count)
+                          if not line.startswith(' ') and ('.py:' in line or 'warnings' in line):
+                              # Save previous warning group if exists
+                              if current_warning_group:
+                                  warnings_list.append('\\n'.join(current_warning_group))
+                              # Start new warning group
+                              current_warning_group = [line]
+                          elif line.startswith(' ') and current_warning_group:
+                              # This is part of the current warning (indented line)
+                              current_warning_group.append(line)
+                      
+                      # Don't forget the last warning group
+                      if current_warning_group:
+                          warnings_list.append('\\n'.join(current_warning_group))
+              
+              print(f'Extracted {len(warnings_list)} warning groups from test output')
+          except Exception as e:
+              print(f'Could not extract warnings: {e}')
 
-              const suites = Array.isArray(data.testResults) ? data.testResults : [];
-
-              for (const suite of suites) {
-                const suitePath = suite.name || suite.testFilePath || '';
-                const relativeSuitePath = suitePath
-                  ? path.relative(process.cwd(), suitePath) || suitePath
-                  : '';
-                const assertions = Array.isArray(suite.assertionResults)
-                  ? suite.assertionResults
-                  : [];
-
-                for (const assertion of assertions) {
-                  const titleParts = [];
-                  if (Array.isArray(assertion.ancestorTitles)) {
-                    for (const ancestor of assertion.ancestorTitles) {
-                      if (ancestor) {
-                        titleParts.push(String(ancestor));
-                      }
-                    }
-                  }
-                  if (assertion.title) {
-                    titleParts.push(String(assertion.title));
-                  }
-
-                  const fullName = titleParts.join(' › ') || assertion.fullName || assertion.title || 'Unnamed test';
-                  const identifier = relativeSuitePath
-                    ? `${relativeSuitePath}::${fullName}`
-                    : fullName;
-
-                  allTests.push(identifier);
-
-                  switch (assertion.status) {
-                    case 'passed':
-                      passingTests.push(identifier);
-                      break;
-                    case 'failed':
-                      failingTests.push(identifier);
-                      break;
-                    case 'pending':
-                    case 'skipped':
-                    case 'todo':
-                      skippedTests.push(identifier);
-                      skippedTestsWithReasons[identifier] =
-                        assertion.status === 'todo'
-                          ? 'Marked as todo in Jest suite'
-                          : 'Test marked as skipped/pending in Jest output';
-                      break;
-                    default:
-                      // Treat any other status as skipped-equivalent
-                      skippedTests.push(identifier);
-                      skippedTestsWithReasons[identifier] = 'Test not executed (treated as skipped)';
-                      break;
-                  }
-                }
-              }
-
-              if (!prTotal && allTests.length) {
-                prTotal = allTests.length;
-              }
-              if (!prPassed && passingTests.length) {
-                prPassed = passingTests.length;
-              }
-
-              prPercentage = prTotal > 0 ? (prPassed / prTotal) * 100 : 0;
-
-              console.log(`Parsed Jest results: ${prPassed}/${prTotal} passed (${prPercentage.toFixed(2)}%)`);
-              console.log(`Failing tests: ${failingTests.length}`);
-              console.log(`Skipped tests: ${skippedTests.length}`);
-              console.log(`Total discovered tests: ${allTests.length}`);
-            } catch (error) {
-              console.log(`Error parsing pr_results.json: ${error.message}`);
-            }
-          } else {
-            console.log('pr_results.json not found. No test data to parse.');
+          # Save test lists to artifact files instead of job outputs
+          test_data = {
+              'passing_tests': passing_tests,
+              'failing_tests': failing_tests,
+              'skipped_tests': skipped_tests,
+              'xfailed_tests': xfailed_tests,
+              'all_tests': all_tests,
+              'skipped_tests_with_reasons': skipped_tests_with_reasons,
+              'xfailed_tests_with_reasons': xfailed_tests_with_reasons,
+              'warnings': warnings_list
           }
 
-          const outputContent = safeRead(path.resolve(process.cwd(), 'test_output.txt'));
-          if (outputContent) {
-            const warnLines = outputContent
-              .split('\n')
-              .map((line) => line.trimEnd())
-              .filter((line) => /\bWARN(?:ING)?\b/.test(line));
-            if (warnLines.length) {
-              warningsList = warnLines.slice(0, 200);
-              console.log(`Collected ${warningsList.length} warning line(s) from Jest output.`);
-            }
-          }
+          with open('pr_test_data.json', 'w') as f:
+              json.dump(test_data, f, indent=2)
 
-          const testData = {
-            passing_tests: passingTests,
-            failing_tests: failingTests,
-            skipped_tests: skippedTests,
-            xfailed_tests: xfailedTests,
-            all_tests: allTests,
-            skipped_tests_with_reasons: skippedTestsWithReasons,
-            xfailed_tests_with_reasons: xfailedTestsWithReasons,
-            warnings: warningsList,
-          };
+          print('Test data saved to pr_test_data.json for artifact')
+          print('Results extraction completed')
 
-          fs.writeFileSync('pr_test_data.json', JSON.stringify(testData, null, 2));
-          console.log('Wrote pr_test_data.json with standardized Jest results.');
-
-          const percentageString = Number.isFinite(prPercentage) ? prPercentage.toFixed(2) : '0.00';
-          const outputLines = [
-            `total=${prTotal}`,
-            `passed=${prPassed}`,
-            `percentage=${percentageString}`,
-            `failing_count=${failingTests.length}`,
-            `skipped_count=${skippedTests.length}`,
-            `xfailed_count=${xfailedTests.length}`,
-          ];
-
-          if (process.env.GITHUB_OUTPUT) {
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${outputLines.join('\n')}\n`);
-          }
-          NODE
+          # Set scalar outputs only (no large arrays)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={pr_total}\\n')
+              f.write(f'passed={pr_passed}\\n')
+              f.write(f'percentage={pr_percentage:.2f}\\n')
+              f.write(f'failing_count={len(failing_tests)}\\n')
+              f.write(f'skipped_count={len(skipped_tests)}\\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\\n')
+          "
 
           echo "✅ Test results: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} passed (${{ steps.extract-results.outputs.percentage }}%)"
-        working-directory: ${{ inputs['working-directory'] }}
 
       - name: Upload PR branch artifacts
         if: always()
@@ -401,10 +380,9 @@ jobs:
         with:
           name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            ${{ inputs['working-directory'] }}/pr_test_data.json
-            ${{ inputs['working-directory'] }}/test_output.txt
-            ${{ inputs['working-directory'] }}/pr_results.json
-            ${{ inputs['working-directory'] }}/collection_output.txt
+            pr_test_data.json
+            test_output.txt
+            pr_results.json
           retention-days: 3
           if-no-files-found: ignore
 
@@ -428,137 +406,115 @@ jobs:
           submodules: "recursive"
           ref: ${{ inputs.target_branch_to_compare }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5.3.0
         with:
-          node-version: "${{ inputs['node-version'] }}"
+          python-version: "${{ inputs.python-version }}"
 
       - name: Install dependencies
         run: |
-          set -e
-          if command -v corepack >/dev/null 2>&1; then
-            corepack enable >/dev/null 2>&1 || true
+          python -m pip install --upgrade pip
+          pip install pytest pytest-json-report pytest-asyncio
+          if [ -f requirements.txt ]; then 
+            pip install -r requirements.txt
           fi
-
-          INSTALL_COMMAND="${{ inputs['install-command'] }}"
-          if [ -n "$INSTALL_COMMAND" ]; then
-            echo "Running custom install command: $INSTALL_COMMAND"
-            eval "$INSTALL_COMMAND"
-          elif [ -f package-lock.json ]; then
-            echo "Detected package-lock.json; running npm ci"
-            npm ci
-          elif [ -f yarn.lock ]; then
-            if command -v yarn >/dev/null 2>&1; then
-              echo "Detected yarn.lock; running yarn install --frozen-lockfile"
-              yarn install --frozen-lockfile
-            else
-              echo "::warning::yarn.lock detected but yarn is unavailable. Falling back to npm install."
-              npm install
-            fi
-          elif [ -f pnpm-lock.yaml ]; then
-            if command -v pnpm >/dev/null 2>&1; then
-              echo "Detected pnpm-lock.yaml; running pnpm install --frozen-lockfile"
-              pnpm install --frozen-lockfile
-            else
-              echo "::warning::pnpm-lock.yaml detected but pnpm is unavailable. Falling back to npm install."
-              npm install
-            fi
-          else
-            echo "No lockfile detected; running npm install"
-            npm install
-          fi
-        working-directory: ${{ inputs['working-directory'] }}
+          cd src
 
       - name: Check for test collection errors
         id: check-collection
         run: |
+          # Create verbose debug file for artifact
           exec 3>&1 4>&2
           exec 1> >(tee -a debug_target_collection.log) 2>&1
 
-          echo "Running Jest collection check on target branch..."
+          echo "Running pytest collection check..."
+          python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
 
+          # Restore stdout/stderr for GitHub Actions
+          exec 1>&3 2>&4
+
+          # Set default values
           HAS_COLLECTION_ERRORS="false"
           NO_TESTS_FOUND="false"
           ERROR_TYPE="none"
           ERROR_DETAILS="none"
 
-          JEST_COMMAND="${{ inputs['jest-command'] }}"
-          JEST_EXTRA_ARGS="${{ inputs['jest-extra-args'] }}"
-          COLLECTION_COMMAND="$JEST_COMMAND $JEST_EXTRA_ARGS --listTests"
-
-          echo "Executing: $COLLECTION_COMMAND"
-
-          set +e
-          eval "$COLLECTION_COMMAND" > collection_output.txt 2>&1
-          EXIT_CODE=$?
-          set -e
-
-          exec 1>&3 2>&4
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            HAS_COLLECTION_ERRORS="true"
-            if grep -qi "Cannot find module" collection_output.txt; then
+          if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
+            echo "::warning::Test discovery errors detected in target branch - Python modules could not be imported correctly"
+            
+            # Attempt to identify specific error type
+            if grep -q "ImportError" collection_output.txt; then
+              ERROR_TYPE="ImportError"
+            elif grep -q "ModuleNotFoundError" collection_output.txt; then
               ERROR_TYPE="ModuleNotFoundError"
-            elif grep -qi "SyntaxError" collection_output.txt; then
+            elif grep -q "SyntaxError" collection_output.txt; then
               ERROR_TYPE="SyntaxError"
-            elif grep -qi "TypeError" collection_output.txt; then
-              ERROR_TYPE="TypeError"
-            elif grep -qi "ReferenceError" collection_output.txt; then
-              ERROR_TYPE="ReferenceError"
-            else
-              ERROR_TYPE="ExecutionError"
+            elif grep -q "ERROR collecting" collection_output.txt; then
+              ERROR_TYPE="CollectionError"
+            elif grep -q "Interrupted:" collection_output.txt; then
+              ERROR_TYPE="Interrupted"
+            else 
+              ERROR_TYPE="UnknownError"
             fi
-
-            ERROR_DETAILS=$(head -40 collection_output.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-            echo "::warning::Test discovery errors detected in target branch via Jest ($ERROR_TYPE)"
-            echo "::warning::First details: ${ERROR_DETAILS:0:200}..."
+            
+            echo "Target branch discovery error type: $ERROR_TYPE"
+            
+            ERROR_FILE=$(grep -o "ERROR collecting.*\.py" collection_output.txt | grep -o "[a-zA-Z0-9_/]*\.py" || echo "Unknown file")
+            
+            if [[ "$ERROR_FILE" != "Unknown file" ]]; then
+              echo "Error in file $ERROR_FILE"
+              grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            else
+              grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
+              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
+            fi
+            
+            echo "::warning::Target branch discovery error details: ${ERROR_DETAILS:0:200}..."
+            HAS_COLLECTION_ERRORS="true"
           else
-            TEST_COUNT=$(grep -cv '^[[:space:]]*$' collection_output.txt || echo "0")
-            if [ "$TEST_COUNT" = "0" ]; then
+            echo "No discovery errors detected in target branch"
+            
+            TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
+            
+            if [[ "$TEST_COUNT" == "0" ]]; then
+              echo "::warning::No tests were found in the target branch"
               NO_TESTS_FOUND="true"
               ERROR_TYPE="NoTestsFound"
-              ERROR_DETAILS="Jest --listTests did not return any test files"
-              echo "::warning::No tests were found in the target branch"
-            else
-              echo "Found $TEST_COUNT test file(s) in target branch"
+              ERROR_DETAILS="No test files were discovered in target branch that match pytest's test discovery pattern"
+            else  
+              echo "Found $TEST_COUNT tests in target branch"
             fi
           fi
 
+          # Set all the outputs
           echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
           echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
           echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
           echo "error_details=$ERROR_DETAILS" >> $GITHUB_OUTPUT
 
+          # For backward compatibility
           if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
             echo "has_errors=true" >> $GITHUB_OUTPUT
           else
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
+          # Save full collection output to debug file for artifact
           echo "=== FULL COLLECTION OUTPUT ===" >> debug_target_collection.log
           cat collection_output.txt >> debug_target_collection.log
-        working-directory: ${{ inputs['working-directory'] }}
 
       - name: Run tests on target branch
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          echo "Running Jest tests on target branch..."
-          JEST_COMMAND="${{ inputs['jest-command'] }}"
-          JEST_EXTRA_ARGS="${{ inputs['jest-extra-args'] }}"
-          TEST_COMMAND="$JEST_COMMAND $JEST_EXTRA_ARGS --json --outputFile=target_results.json --testLocationInResults"
-          echo "Executing: $TEST_COMMAND"
-
-          set +e
-          eval "$TEST_COMMAND" > target_test_output.txt 2>&1
-          EXIT_CODE=$?
-          set -e
+          echo "Running tests on target branch..."
+          python -m pytest -vv --json-report --json-report-file=target_results.json --tb=short > target_test_output.txt 2>&1 || true
 
           if [ -f target_results.json ]; then
-            echo "✅ Test execution completed (exit code: $EXIT_CODE)"
+            echo "✅ Test execution completed"
           else
-            echo "❌ Test execution did not produce target_results.json (exit code: $EXIT_CODE)"
+            echo "❌ Test execution failed"
           fi
-        working-directory: ${{ inputs['working-directory'] }}
 
       - name: Extract test results and create artifacts
         id: extract-results
@@ -571,161 +527,158 @@ jobs:
           exec 3>&1 4>&2
           exec 1> >(tee -a debug_target_extract_results.log) 2>&1
 
-          node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
+          python -c "
+          import json
+          import sys
+          import os
 
-          const resultsPath = path.resolve(process.cwd(), 'target_results.json');
-          let targetTotal = 0;
-          let targetPassed = 0;
-          let targetPercentage = 0;
-          const passingTests = [];
-          const failingTests = [];
-          const skippedTests = [];
-          const xfailedTests = [];
-          const skippedTestsWithReasons = {};
-          const xfailedTestsWithReasons = {};
-          const allTests = [];
-          let warningsList = [];
+          print('Starting test results extraction script for target branch')
 
-          const safeRead = (filePath) => {
-            try {
-              return fs.readFileSync(filePath, 'utf-8');
-            } catch (error) {
-              return null;
-            }
-          };
+          # Default values in case file doesn't exist or is invalid
+          target_total = 0
+          target_passed = 0
+          target_percentage = 0
+          passing_tests = []
+          failing_tests = []
+          skipped_tests = []
+          xfailed_tests = []
+          all_tests = []
 
-          const rawResults = safeRead(resultsPath);
+          try:
+              print('Attempting to open target_results.json')
+              with open('target_results.json') as f:
+                  target_results = json.load(f)
+                  print(f'JSON loaded successfully, keys: {list(target_results.keys())}')
+              
+              # Check for collection errors by looking at exitcode or error patterns
+              if target_results.get('exitcode', 0) > 1:
+                  print('Detected non-zero exitcode, likely a collection error')
+                  if 'collectors' in target_results and target_results['collectors']:
+                      print(f'Collection errors found: {target_results["collectors"]}')
+                  target_total = 0  # Explicitly set to 0 - no tests run when collection fails
+                  target_passed = 0
+              elif 'summary' in target_results and isinstance(target_results['summary'], dict):
+                  # Normal case - extract data from summary
+                  summary = target_results['summary']
+                  target_total = summary.get('total', 0)
+                  target_passed = summary.get('passed', 0)
+                  print(f'Results extracted from summary - Total: {target_total}, Passed: {target_passed}')
+                  
+                  # Extract all test outcomes
+                  if 'tests' in target_results:
+                      print('Extracting all test outcomes from target')
+                      for test in target_results['tests']:
+                          outcome = test.get('outcome')
+                          nodeid = test.get('nodeid', '')
+                          if nodeid:
+                              all_tests.append(nodeid)  # Track all tests regardless of outcome
+                              if outcome == 'passed':
+                                  passing_tests.append(nodeid)
+                              elif outcome in ['failed', 'error']:
+                                  failing_tests.append(nodeid)
+                              elif outcome == 'skipped':
+                                  skipped_tests.append(nodeid)
+                              elif outcome == 'xfailed':
+                                  xfailed_tests.append(nodeid)
+                      
+                      print(f'Found {len(passing_tests)} passing tests')
+                      print(f'Found {len(failing_tests)} failing tests')
+                      print(f'Found {len(skipped_tests)} skipped tests')
+                      print(f'Found {len(xfailed_tests)} xfailed tests')
+                      print(f'Found {len(all_tests)} total discovered tests')
+              else:
+                  print('No valid summary structure found')
+              
+              # Calculate percentage safely
+              target_percentage = (target_passed / target_total * 100) if target_total > 0 else 0
+              print(f'Pass percentage calculated: {target_percentage:.2f}%')
+              
+          except FileNotFoundError as e:
+              print(f'File not found error: {e}')
+          except KeyError as e:
+              print(f'Missing key in results file: {e}')
+              if 'target_results' in locals():
+                  print(f'Available keys: {list(target_results.keys())}')
+                  if 'summary' in target_results:
+                      print(f'Summary structure: {target_results["summary"]}')
+          except Exception as e:
+              print(f'Error processing results: {e}')
+              import traceback
+              print(f'Full exception: {traceback.format_exc()}')
 
-          if (rawResults) {
-            try {
-              const data = JSON.parse(rawResults);
-              if (typeof data.numTotalTests === 'number') {
-                targetTotal = data.numTotalTests;
-              }
-              if (typeof data.numPassedTests === 'number') {
-                targetPassed = data.numPassedTests;
-              }
+          print(f'Total tests: {target_total}')
+          print(f'Passed tests: {target_passed}')
+          print(f'Pass percentage: {target_percentage:.2f}%')
+          print(f'Passing tests: {len(passing_tests)}')
+          print(f'All discovered tests: {len(all_tests)}')
 
-              const suites = Array.isArray(data.testResults) ? data.testResults : [];
+          # Extract warnings from test output
+          warnings_list = []
+          try:
+              with open('target_test_output.txt', 'r') as f:
+                  content = f.read()
+                  # Extract warnings section
+                  if '============================== warnings summary ===============================' in content:
+                      warnings_section = content.split('============================== warnings summary ===============================')[1]
+                      if '-- Docs:' in warnings_section:
+                          warnings_section = warnings_section.split('-- Docs:')[0]
+                      
+                      # Parse warnings - format is file path followed by indented warning details
+                      lines = warnings_section.split('\\n')
+                      current_warning_group = []
+                      
+                      for line in lines:
+                          line = line.rstrip()
+                          if not line or line.startswith('='):
+                              continue
+                          
+                          # Check if this is a file path (starts at column 0, ends with .py: or contains warning count)
+                          if not line.startswith(' ') and ('.py:' in line or 'warnings' in line):
+                              # Save previous warning group if exists
+                              if current_warning_group:
+                                  warnings_list.append('\\n'.join(current_warning_group))
+                              # Start new warning group
+                              current_warning_group = [line]
+                          elif line.startswith(' ') and current_warning_group:
+                              # This is part of the current warning (indented line)
+                              current_warning_group.append(line)
+                      
+                      # Don't forget the last warning group
+                      if current_warning_group:
+                          warnings_list.append('\\n'.join(current_warning_group))
+              
+              print(f'Extracted {len(warnings_list)} warning groups from target test output')
+          except Exception as e:
+              print(f'Could not extract warnings: {e}')
 
-              for (const suite of suites) {
-                const suitePath = suite.name || suite.testFilePath || '';
-                const relativeSuitePath = suitePath
-                  ? path.relative(process.cwd(), suitePath) || suitePath
-                  : '';
-                const assertions = Array.isArray(suite.assertionResults)
-                  ? suite.assertionResults
-                  : [];
-
-                for (const assertion of assertions) {
-                  const titleParts = [];
-                  if (Array.isArray(assertion.ancestorTitles)) {
-                    for (const ancestor of assertion.ancestorTitles) {
-                      if (ancestor) {
-                        titleParts.push(String(ancestor));
-                      }
-                    }
-                  }
-                  if (assertion.title) {
-                    titleParts.push(String(assertion.title));
-                  }
-
-                  const fullName = titleParts.join(' › ') || assertion.fullName || assertion.title || 'Unnamed test';
-                  const identifier = relativeSuitePath
-                    ? `${relativeSuitePath}::${fullName}`
-                    : fullName;
-
-                  allTests.push(identifier);
-
-                  switch (assertion.status) {
-                    case 'passed':
-                      passingTests.push(identifier);
-                      break;
-                    case 'failed':
-                      failingTests.push(identifier);
-                      break;
-                    case 'pending':
-                    case 'skipped':
-                    case 'todo':
-                      skippedTests.push(identifier);
-                      skippedTestsWithReasons[identifier] =
-                        assertion.status === 'todo'
-                          ? 'Marked as todo in Jest suite'
-                          : 'Test marked as skipped/pending in Jest output';
-                      break;
-                    default:
-                      skippedTests.push(identifier);
-                      skippedTestsWithReasons[identifier] = 'Test not executed (treated as skipped)';
-                      break;
-                  }
-                }
-              }
-
-              if (!targetTotal && allTests.length) {
-                targetTotal = allTests.length;
-              }
-              if (!targetPassed && passingTests.length) {
-                targetPassed = passingTests.length;
-              }
-
-              targetPercentage = targetTotal > 0 ? (targetPassed / targetTotal) * 100 : 0;
-
-              console.log(`Parsed target Jest results: ${targetPassed}/${targetTotal} passed (${targetPercentage.toFixed(2)}%)`);
-              console.log(`Passing tests: ${passingTests.length}`);
-              console.log(`Total discovered tests: ${allTests.length}`);
-            } catch (error) {
-              console.log(`Error parsing target_results.json: ${error.message}`);
-            }
-          } else {
-            console.log('target_results.json not found. No baseline data to parse.');
+          # Save test lists to artifact files instead of job outputs
+          test_data = {
+              'passing_tests': passing_tests,
+              'failing_tests': failing_tests,
+              'skipped_tests': skipped_tests,
+              'xfailed_tests': xfailed_tests,
+              'all_tests': all_tests,
+              'warnings': warnings_list
           }
 
-          const outputContent = safeRead(path.resolve(process.cwd(), 'target_test_output.txt'));
-          if (outputContent) {
-            const warnLines = outputContent
-              .split('\n')
-              .map((line) => line.trimEnd())
-              .filter((line) => /\bWARN(?:ING)?\b/.test(line));
-            if (warnLines.length) {
-              warningsList = warnLines.slice(0, 200);
-              console.log(`Collected ${warningsList.length} warning line(s) from target Jest output.`);
-            }
-          }
+          with open('target_test_data.json', 'w') as f:
+              json.dump(test_data, f, indent=2)
 
-          const testData = {
-            passing_tests: passingTests,
-            failing_tests: failingTests,
-            skipped_tests: skippedTests,
-            xfailed_tests: xfailedTests,
-            all_tests: allTests,
-            skipped_tests_with_reasons: skippedTestsWithReasons,
-            xfailed_tests_with_reasons: xfailedTestsWithReasons,
-            warnings: warningsList,
-          };
+          print('Test data saved to target_test_data.json for artifact')
+          print('Results extraction completed')
 
-          fs.writeFileSync('target_test_data.json', JSON.stringify(testData, null, 2));
-          console.log('Wrote target_test_data.json with standardized Jest results.');
-
-          const percentageString = Number.isFinite(targetPercentage) ? targetPercentage.toFixed(2) : '0.00';
-          const outputLines = [
-            `total=${targetTotal}`,
-            `passed=${targetPassed}`,
-            `percentage=${percentageString}`,
-            `passing_count=${passingTests.length}`,
-          ];
-
-          if (process.env.GITHUB_OUTPUT) {
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${outputLines.join('\n')}\n`);
-          }
-          NODE
+          # Set scalar outputs only (no large arrays)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={target_total}\\n')
+              f.write(f'passed={target_passed}\\n')
+              f.write(f'percentage={target_percentage:.2f}\\n')
+              f.write(f'passing_count={len(passing_tests)}\\n')
+          "
 
           # Restore stdout/stderr for GitHub Actions
           exec 1>&3 2>&4
 
           echo "Target branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
-        working-directory: ${{ inputs['working-directory'] }}
 
       - name: Upload target branch artifacts
         if: always()
@@ -733,12 +686,9 @@ jobs:
         with:
           name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
           path: |
-            ${{ inputs['working-directory'] }}/target_test_data.json
-            ${{ inputs['working-directory'] }}/target_test_output.txt
-            ${{ inputs['working-directory'] }}/target_results.json
-            ${{ inputs['working-directory'] }}/collection_output.txt
-            ${{ inputs['working-directory'] }}/debug_target_collection.log
-            ${{ inputs['working-directory'] }}/debug_target_extract_results.log
+            target_test_data.json
+            target_test_output.txt
+            target_results.json
           retention-days: 3
           if-no-files-found: ignore
 
@@ -755,7 +705,7 @@ jobs:
 
   compare-results:
     needs: [test-source-branch, test-target-branch]
-    uses: ./.github/workflows/regression-test.yml
+    uses: ./.github/workflows/test-regression-analysis.yml
     with:
       runs_on: ${{ inputs.runs_on }}
       baseline_label: ${{ inputs.target_branch_to_compare }}
@@ -995,7 +945,7 @@ jobs:
           exec 1>&3 2>&4
 
           # Make this a standard echo for better visibility of the final list
-          echo "Final Ping Keys Output (GitHub Logins from test-js-jest.yml): [$PING_KEYS_OUTPUT]"
+          echo "Final Ping Keys Output (GitHub Logins from test-pytest.yml): [$PING_KEYS_OUTPUT]"
           echo "ping_user_ids_out=$PING_KEYS_OUTPUT" >> $GITHUB_OUTPUT
 
           # Store branch names in variables with proper quoting
@@ -1003,7 +953,7 @@ jobs:
           TARGET_BRANCH="${TARGET_BRANCH_NAME:-unknown}"
 
           # 2. Construct Message Body
-          MESSAGE_LINES+=("**Jest Comparison & Regression Analysis for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
+          MESSAGE_LINES+=("**Pytest Comparison & Regression Analysis for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
           MESSAGE_LINES+=("Branch: [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) against [\`${TARGET_BRANCH}\`](${REPO_URL}/tree/${TARGET_BRANCH})")
           MESSAGE_LINES+=("---")
 
@@ -1034,7 +984,7 @@ jobs:
             MESSAGE_LINES+=("  - See attached file for detailed error information.")
           elif [[ "$PR_NO_TESTS_FOUND" == "true" ]]; then
             MESSAGE_LINES+=("**:warning: WARNING: No Tests Found in PR Branch (\`${PR_BRANCH}\`)**")
-            MESSAGE_LINES+=("  - Jest did not discover any test files matching its patterns.")
+            MESSAGE_LINES+=("  - Pytest did not discover any test files matching its patterns.")
             MESSAGE_LINES+=("  - Ensure your test files are correctly named (e.g., \`test_*.py\` or \`*_test.py\`) and located.")
           fi
 
@@ -1229,7 +1179,7 @@ jobs:
             FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
           fi
 
-          echo "Final message body prepared in test-js-jest.yml"
+          echo "Final message body prepared in test-pytest.yml"
 
           echo "message_body_out<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_MESSAGE_BODY" >> $GITHUB_OUTPUT
