@@ -846,7 +846,7 @@ jobs:
           echo "Raw GH_ASSIGNEES_JSON value: [$GH_ASSIGNEES_JSON]"
           echo "Raw USER_MAP_JSON value: [$USER_MAP_JSON]"
 
-          # 1. Determine Pings - Collect GitHub Logins to pass to alert-discord.yml
+          # 1. Determine Pings - Collect GitHub Logins to pass to discord-alert.yml
           # Initialize PING_KEYS_OUTPUT
           PING_KEYS_OUTPUT=""
 
@@ -1194,7 +1194,7 @@ jobs:
       always() &&
       needs.prepare-notification.outputs.should_notify == 'true' &&
       needs.prepare-notification.outputs.webhook_available_for_alert == 'true'
-    uses: ./.github/workflows/alert-discord.yml
+    uses: ./.github/workflows/discord-alert.yml
     with:
       message_body: ${{ needs.prepare-notification.outputs.message_body }}
       ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}

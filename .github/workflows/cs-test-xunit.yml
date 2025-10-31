@@ -171,10 +171,10 @@ jobs:
           dotnet test --logger:"trx;LogFileName=test_results.trx" --results-directory ./test_results > pr_test_output.txt 2>&1
           TEST_EXIT_CODE=$?
           set -e
-          
+
           echo "Test exit code: $TEST_EXIT_CODE"
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
-          
+
           # Save output for debugging
           cp pr_test_output.txt test_results/ || true
 
@@ -418,10 +418,10 @@ jobs:
           dotnet test --logger:"trx;LogFileName=test_results.trx" --results-directory ./test_results > target_test_output.txt 2>&1
           TEST_EXIT_CODE=$?
           set -e
-          
+
           echo "Test exit code: $TEST_EXIT_CODE"
           echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
-          
+
           # Save output for debugging
           cp target_test_output.txt test_results/ || true
 
@@ -642,7 +642,7 @@ jobs:
           MESSAGE_LINES=()
           MESSAGE_LINES+=("**xUnit Test Results - PR #${{ github.event.pull_request.number }}**")
           MESSAGE_LINES+=("")
-          
+
           # Add regression information if available
           if [[ "${{ needs.compare-results.outputs.has_regressions }}" == "true" ]]; then
             MESSAGE_LINES+=("**:red_circle: REGRESSIONS DETECTED**")
@@ -666,16 +666,16 @@ jobs:
           else
             MESSAGE_LINES+=("**:white_check_mark: NO REGRESSIONS DETECTED**")
           fi
-          
+
           # Add test statistics
           MESSAGE_LINES+=("")
           MESSAGE_LINES+=("**Statistics:**")
           MESSAGE_LINES+=("- PR Branch: ${{ needs.test-source-branch.outputs.passed }}/${{ needs.test-source-branch.outputs.total }} passed (${{ needs.test-source-branch.outputs.percentage }}%)")
           MESSAGE_LINES+=("- Target Branch: ${{ needs.test-target-branch.outputs.passed }}/${{ needs.test-target-branch.outputs.total }} passed (${{ needs.test-target-branch.outputs.percentage }}%)")
-          
+
           MESSAGE_LINES+=("---")
           MESSAGE_LINES+=("[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})")
-          
+
           # Set artifact path
           ARTIFACT_PATH_OUTPUT=""
           if [ -f "comprehensive_regression_report.txt" ]; then
@@ -683,17 +683,17 @@ jobs:
           elif [ -f "regression_details.txt" ]; then
             ARTIFACT_PATH_OUTPUT="regression_details.txt"
           fi
-          
+
           # Construct final message
           FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
           FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
-          
+
           echo "message_body_out<<EOF" >> $GITHUB_OUTPUT
           echo "$FINAL_MESSAGE_BODY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
+
           echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
-          
+
           # Handle ping users (simplified)
           PING_USER_IDS=""
           if [[ "${{ inputs.ping_latest_committer }}" == "true" ]]; then
@@ -709,7 +709,7 @@ jobs:
       always() &&
       needs.prepare-notification.outputs.should_notify == 'true' &&
       needs.prepare-notification.outputs.webhook_available_for_alert == 'true'
-    uses: ./.github/workflows/alert-discord.yml
+    uses: ./.github/workflows/discord-alert.yml
     with:
       message_body: ${{ needs.prepare-notification.outputs.message_body }}
       ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}
