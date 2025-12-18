@@ -213,6 +213,7 @@ jobs:
           pr_passed = 0
           pr_percentage = 0
           failing_tests = []
+          error_tests = []
           skipped_tests = []
           xfailed_tests = []
           all_tests = []
@@ -250,8 +251,10 @@ jobs:
                               all_tests.append(nodeid)  # Track all tests regardless of outcome
                               if outcome == 'passed':
                                   passing_tests.append(nodeid)
-                              elif outcome in ['failed', 'error']:
+                              elif outcome == 'failed':
                                   failing_tests.append(nodeid)
+                              elif outcome == 'error':
+                                  error_tests.append(nodeid)
                               elif outcome == 'skipped':
                                   skipped_tests.append(nodeid)
                                   # Extract skip reason
@@ -365,6 +368,7 @@ jobs:
           test_data = {
               'passing_tests': passing_tests,
               'failing_tests': failing_tests,
+              'error_tests': error_tests,
               'skipped_tests': skipped_tests,
               'xfailed_tests': xfailed_tests,
               'all_tests': all_tests,
@@ -545,6 +549,7 @@ jobs:
           target_percentage = 0
           passing_tests = []
           failing_tests = []
+          error_tests = []
           skipped_tests = []
           xfailed_tests = []
           all_tests = []
@@ -579,15 +584,18 @@ jobs:
                               all_tests.append(nodeid)  # Track all tests regardless of outcome
                               if outcome == 'passed':
                                   passing_tests.append(nodeid)
-                              elif outcome in ['failed', 'error']:
+                              elif outcome == 'failed':
                                   failing_tests.append(nodeid)
+                              elif outcome == 'error':
+                                  error_tests.append(nodeid)
                               elif outcome == 'skipped':
                                   skipped_tests.append(nodeid)
                               elif outcome == 'xfailed':
                                   xfailed_tests.append(nodeid)
-                      
+
                       print(f'Found {len(passing_tests)} passing tests')
                       print(f'Found {len(failing_tests)} failing tests')
+                      print(f'Found {len(error_tests)} error tests')
                       print(f'Found {len(skipped_tests)} skipped tests')
                       print(f'Found {len(xfailed_tests)} xfailed tests')
                       print(f'Found {len(all_tests)} total discovered tests')
@@ -667,6 +675,7 @@ jobs:
           test_data = {
               'passing_tests': passing_tests,
               'failing_tests': failing_tests,
+              'error_tests': error_tests,
               'skipped_tests': skipped_tests,
               'xfailed_tests': xfailed_tests,
               'all_tests': all_tests,
