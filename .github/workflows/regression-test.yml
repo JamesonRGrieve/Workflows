@@ -289,7 +289,12 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from typing import List, TextIO
+          from typing import List, TextIO, Dict, Set, Tuple
+
+          # States ordered from best to worst for matrix display
+          # This ordering puts improvements below diagonal, regressions above
+          STATES = ["Pass", "Skip", "XFail", "Fail", "Error", "Nonexistent"]
+          STATE_KEYS = ["passing", "skipped", "xfailed", "failing", "error", "nonexistent"]
 
           def load_json(path: str) -> dict:
               file_path = Path(path)
@@ -330,8 +335,10 @@ jobs:
                   status = status.lower()
                   if status in {"passed", "pass"}:
                       data["passing"].add(str(test_id))
-                  elif status in {"failed", "fail", "error"}:
+                  elif status in {"failed", "fail"}:
                       data["failing"].add(str(test_id))
+                  elif status == "error":
+                      data["error"].add(str(test_id))
                   elif status in {"skipped", "skip"}:
                       data["skipped"].add(str(test_id))
                   elif status in {"xfailed", "xfail"}:
@@ -343,6 +350,7 @@ jobs:
               data = {
                   "passing": set(coerce_list(raw.get("passing_tests"))),
                   "failing": set(coerce_list(raw.get("failing_tests"))),
+                  "error": set(coerce_list(raw.get("error_tests"))),
                   "skipped": set(coerce_list(raw.get("skipped_tests"))),
                   "xfailed": set(coerce_list(raw.get("xfailed_tests"))),
                   "warnings": set(coerce_list(raw.get("warnings"))),
@@ -356,6 +364,7 @@ jobs:
                   data["all"].update(
                       data["passing"]
                       | data["failing"]
+                      | data["error"]
                       | data["skipped"]
                       | data["xfailed"]
                       | data["other"]
@@ -363,50 +372,104 @@ jobs:
 
               return data
 
+          def classify_transition(from_state: str, to_state: str) -> str:
+              """Classify a state transition as regression, improvement, neutral, or new."""
+              if from_state == to_state:
+                  return "diagonal"
+              if from_state == "Nonexistent":
+                  return "new"
+
+              # Regressions (bold): moving to a worse state
+              # Anything to Fail or Error is regression
+              if to_state in ["Fail", "Error"]:
+                  return "regression"
+              # Anything to Nonexistent is regression
+              if to_state == "Nonexistent":
+                  return "regression"
+              # Pass to anything else is regression
+              if from_state == "Pass":
+                  return "regression"
+              # Skip to Fail/Error already covered above
+
+              # Neutrals
+              if from_state == "Fail" and to_state == "XFail":
+                  return "neutral"
+              if from_state == "Skip" and to_state == "XFail":
+                  return "neutral"
+
+              # Improvements (italic): moving to a better state
+              if to_state == "Pass":
+                  return "improvement"
+              if from_state in ["Fail", "Error"] and to_state == "Skip":
+                  return "improvement"
+              if from_state == "Error" and to_state in ["XFail", "Fail"]:
+                  return "improvement"
+              if from_state == "XFail" and to_state == "Skip":
+                  return "improvement"
+
+              return "neutral"
+
+          def format_cell(count: int, classification: str) -> str:
+              """Format a cell value based on its classification."""
+              if classification == "diagonal":
+                  return "-"
+              if count == 0:
+                  return "0"
+              if classification == "regression":
+                  return f"**{count}**"
+              if classification == "improvement":
+                  return f"*{count}*"
+              return str(count)
+
+          def get_state_set(data: dict, state: str, all_tests: Set[str]) -> Set[str]:
+              """Get the set of tests in a given state."""
+              state_map = {
+                  "Pass": "passing",
+                  "Skip": "skipped",
+                  "XFail": "xfailed",
+                  "Fail": "failing",
+                  "Error": "error",
+                  "Nonexistent": "nonexistent",
+              }
+              if state == "Nonexistent":
+                  return all_tests - data["all"]
+              return data.get(state_map[state], set())
+
           baseline_data = build_status_sets(load_json("baseline_results.json"))
           current_data = build_status_sets(load_json("current_results.json"))
 
-          pass_to_fail = sorted(baseline_data["passing"] & current_data["failing"])
-          pass_to_skip = sorted(
-              baseline_data["passing"] & (current_data["skipped"] | current_data["xfailed"])
-          )
-          pass_to_gone = sorted(baseline_data["passing"] - current_data["all"])
-          fail_to_gone = sorted(baseline_data["failing"] - current_data["all"])
-          discovery_regressions = sorted(current_data["warnings"] - baseline_data["warnings"])
+          # Get all tests across both runs
+          all_tests_union = baseline_data["all"] | current_data["all"]
 
-          fail_to_skip = sorted(baseline_data["failing"] & current_data["skipped"])
-          fail_to_pass = sorted(baseline_data["failing"] & current_data["passing"])
-          new_tests = sorted(current_data["all"] - baseline_data["all"])
+          # Compute all state transitions
+          transitions: Dict[Tuple[str, str], List[str]] = {}
+          for from_state in STATES:
+              for to_state in STATES:
+                  from_set = get_state_set(baseline_data, from_state, all_tests_union)
+                  to_set = get_state_set(current_data, to_state, all_tests_union)
+                  transitions[(from_state, to_state)] = sorted(from_set & to_set)
 
-          regression_count = (
-              len(pass_to_fail)
-              + len(pass_to_skip)
-              + len(pass_to_gone)
-              + len(fail_to_gone)
-              + len(discovery_regressions)
-          )
+          # Discovery warnings (separate from state transitions)
+          discovery_warnings = sorted(current_data["warnings"] - baseline_data["warnings"])
+
+          # Calculate regression count (same logic as before, but expanded)
+          regression_transitions = []
+          for (from_state, to_state), tests in transitions.items():
+              if classify_transition(from_state, to_state) == "regression":
+                  regression_transitions.extend(tests)
+
+          regression_count = len(set(regression_transitions)) + len(discovery_warnings)
           has_regressions = regression_count > 0
 
+          # Build analysis payload
           analysis_payload = {
-              "pass_to_fail": pass_to_fail,
-              "pass_to_skip": pass_to_skip,
-              "pass_to_gone": pass_to_gone,
-              "fail_to_gone": fail_to_gone,
-              "discovery_regressions": discovery_regressions,
-              "fail_to_skip": fail_to_skip,
-              "fail_to_pass": fail_to_pass,
-              "new_tests": new_tests,
+              "transitions": {f"{f}_to_{t}": tests for (f, t), tests in transitions.items()},
+              "discovery_warnings": discovery_warnings,
               "counts": {
-                  "pass_to_fail": len(pass_to_fail),
-                  "pass_to_skip": len(pass_to_skip),
-                  "pass_to_gone": len(pass_to_gone),
-                  "fail_to_gone": len(fail_to_gone),
-                  "discovery": len(discovery_regressions),
-                  "fail_to_skip": len(fail_to_skip),
-                  "fail_to_pass": len(fail_to_pass),
-                  "new_tests": len(new_tests),
+                  f"{f}_to_{t}": len(tests) for (f, t), tests in transitions.items()
               },
           }
+          analysis_payload["counts"]["discovery_warnings"] = len(discovery_warnings)
 
           Path("regression_analysis.json").write_text(
               json.dumps(analysis_payload, indent=2),
@@ -422,67 +485,67 @@ jobs:
                   handle.write(f"  {idx}. {test_name}\n")
               handle.write("\n")
 
+          # Write comprehensive text report
           with Path("comprehensive_regression_report.txt").open("w", encoding="utf-8") as report:
               report.write("COMPREHENSIVE REGRESSION ANALYSIS\n")
               report.write("=" * 50 + "\n\n")
 
-              write_section(
-                  report,
-                  "PASS-TO-FAIL REGRESSIONS",
-                  pass_to_fail,
-                  "Previously passing, now failing:",
-              )
-              write_section(
-                  report,
-                  "PASS-TO-SKIP REGRESSIONS",
-                  pass_to_skip,
-                  "Previously passing, now skipped or xfailed:",
-              )
-              write_section(
-                  report,
-                  "FAIL-TO-SKIP IMPROVEMENTS",
-                  fail_to_skip,
-                  "Previously failing, now skipped (treated as improvements):",
-              )
-              write_section(
-                  report,
-                  "FAIL-TO-PASS IMPROVEMENTS",
-                  fail_to_pass,
-                  "Previously failing, now passing (treated as improvements):",
-              )
-              write_section(
-                  report,
-                  "PASS-TO-GONE REGRESSIONS",
-                  pass_to_gone,
-                  "Previously passing, now completely missing:",
-              )
-              write_section(
-                  report,
-                  "FAIL-TO-GONE REGRESSIONS",
-                  fail_to_gone,
-                  "Previously failing, now completely missing:",
-              )
+              # Write regressions
+              for from_state in STATES:
+                  for to_state in STATES:
+                      tests = transitions[(from_state, to_state)]
+                      if tests and classify_transition(from_state, to_state) == "regression":
+                          write_section(
+                              report,
+                              f"{from_state.upper()}-TO-{to_state.upper()} REGRESSIONS",
+                              tests,
+                              f"Previously {from_state.lower()}, now {to_state.lower()}:",
+                          )
 
-              if discovery_regressions:
-                  report.write(
-                      f"DISCOVERY REGRESSIONS ({len(discovery_regressions)} warnings)\n"
-                  )
+              # Write improvements
+              for from_state in STATES:
+                  for to_state in STATES:
+                      tests = transitions[(from_state, to_state)]
+                      if tests and classify_transition(from_state, to_state) == "improvement":
+                          write_section(
+                              report,
+                              f"{from_state.upper()}-TO-{to_state.upper()} IMPROVEMENTS",
+                              tests,
+                              f"Previously {from_state.lower()}, now {to_state.lower()}:",
+                          )
+
+              if discovery_warnings:
+                  report.write(f"DISCOVERY WARNINGS ({len(discovery_warnings)} new)\n")
                   report.write("New warnings not present in baseline:\n")
-                  for idx, warning in enumerate(discovery_regressions, 1):
+                  for idx, warning in enumerate(discovery_warnings, 1):
                       truncated = (warning[:200] + "...") if len(warning) > 200 else warning
                       report.write(f"  {idx}. {truncated}\n")
                   report.write("\n")
 
-              write_section(
-                  report,
-                  "NEW TESTS",
-                  new_tests,
-                  "Tests present only in the current run:",
-              )
+              # Write new tests
+              for to_state in STATES:
+                  if to_state == "Nonexistent":
+                      continue
+                  tests = transitions[("Nonexistent", to_state)]
+                  if tests:
+                      write_section(
+                          report,
+                          f"NEW TESTS ({to_state.upper()})",
+                          tests,
+                          f"New tests in {to_state.lower()} state:",
+                      )
 
-              if not has_regressions and not (fail_to_skip or fail_to_pass or new_tests):
-                  report.write("No regressions or test suite changes detected.\n")
+              if not has_regressions:
+                  any_changes = any(
+                      len(tests) > 0
+                      for (f, t), tests in transitions.items()
+                      if f != t
+                  )
+                  if not any_changes and not discovery_warnings:
+                      report.write("No regressions or test suite changes detected.\n")
 
+          # Write pass-to-fail details for backwards compatibility
+          pass_to_fail = transitions[("Pass", "Fail")]
           if pass_to_fail:
               with Path("regression_details.txt").open("w", encoding="utf-8") as handle:
                   handle.write(
@@ -496,19 +559,24 @@ jobs:
                   encoding="utf-8",
               )
 
-          table_rows = [
-              ("Pass → Fail", len(pass_to_fail)),
-              ("Pass → Skip/XFail", len(pass_to_skip)),
-              ("Pass → Gone", len(pass_to_gone)),
-              ("Fail → Gone", len(fail_to_gone)),
-              ("Discovery Warnings", len(discovery_regressions)),
-              ("Fail → Skip (Improvement)", len(fail_to_skip)),
-              ("Fail → Pass (Improvement)", len(fail_to_pass)),
-              ("New Tests", len(new_tests)),
-          ]
+          # Build the matrix table for GitHub summary
+          def build_matrix_table() -> List[str]:
+              """Build markdown matrix table with state transitions."""
+              # Header row
+              header = "| Baseline ↓ / Current → | " + " | ".join(STATES) + " |"
+              separator = "| --- | " + " | ".join(["---"] * len(STATES)) + " |"
 
-          summary_lines = ["| Category | Count |", "| --- | --- |"]
-          summary_lines.extend([f"| {label} | {count} |" for label, count in table_rows])
+              rows = [header, separator]
+
+              for from_state in STATES:
+                  cells = []
+                  for to_state in STATES:
+                      count = len(transitions[(from_state, to_state)])
+                      classification = classify_transition(from_state, to_state)
+                      cells.append(format_cell(count, classification))
+                  rows.append(f"| {from_state} | " + " | ".join(cells) + " |")
+
+              return rows
 
           def write_summary_section(f, title: str, tests: List[str], max_show: int = 20) -> None:
               """Write a collapsible section with test names to the summary."""
@@ -525,52 +593,104 @@ jobs:
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
               with Path(summary_path).open("a", encoding="utf-8") as summary_file:
-                  summary_file.write("### Regression Breakdown\n\n")
-                  summary_file.write("\n".join(summary_lines) + "\n")
-                  if fail_to_skip or fail_to_pass:
-                      summary_file.write("\n_Improvements are highlighted for visibility and do not fail the job._\n")
+                  summary_file.write("### Regression Matrix\n\n")
+                  summary_file.write("**Bold** = regression, *Italic* = improvement, `-` = no change\n\n")
+                  summary_file.write("\n".join(build_matrix_table()) + "\n")
 
-                  # Write detailed test lists
-                  write_summary_section(summary_file, "❌ Pass → Fail", pass_to_fail)
-                  write_summary_section(summary_file, "⚠️ Pass → Skip/XFail", pass_to_skip)
-                  write_summary_section(summary_file, "🔴 Pass → Gone", pass_to_gone)
-                  write_summary_section(summary_file, "🟡 Fail → Gone", fail_to_gone)
-                  write_summary_section(summary_file, "✅ Fail → Pass (Improvement)", fail_to_pass)
-                  write_summary_section(summary_file, "⏭️ Fail → Skip (Improvement)", fail_to_skip)
-                  write_summary_section(summary_file, "🆕 New Tests", new_tests)
-
-                  if discovery_regressions:
-                      summary_file.write(f"\n<details>\n<summary><strong>⚠️ Discovery Warnings</strong> ({len(discovery_regressions)} new)</summary>\n\n")
+                  # Discovery warnings section (between matrix and details)
+                  if discovery_warnings:
+                      summary_file.write(f"\n### New Discovery Warnings ({len(discovery_warnings)})\n\n")
+                      summary_file.write("<details>\n<summary>View warnings</summary>\n\n")
                       summary_file.write("```\n")
-                      for warning in discovery_regressions[:10]:
+                      for warning in discovery_warnings[:10]:
                           truncated = (warning[:300] + "...") if len(warning) > 300 else warning
                           summary_file.write(f"{truncated}\n\n")
-                      if len(discovery_regressions) > 10:
-                          summary_file.write(f"... and {len(discovery_regressions) - 10} more\n")
+                      if len(discovery_warnings) > 10:
+                          summary_file.write(f"... and {len(discovery_warnings) - 10} more\n")
                       summary_file.write("```\n</details>\n")
 
-          print("📊 Regression Analysis Results:")
-          for label, count in table_rows:
-              print(f"  {label}: {count}")
+                  # Collapsible detail sections
+                  summary_file.write("\n### Test Details\n")
+
+                  # Regressions first
+                  for from_state in STATES:
+                      for to_state in STATES:
+                          tests = transitions[(from_state, to_state)]
+                          classification = classify_transition(from_state, to_state)
+                          if tests and classification == "regression":
+                              write_summary_section(
+                                  summary_file,
+                                  f"❌ {from_state} → {to_state}",
+                                  tests
+                              )
+
+                  # Improvements
+                  for from_state in STATES:
+                      for to_state in STATES:
+                          tests = transitions[(from_state, to_state)]
+                          classification = classify_transition(from_state, to_state)
+                          if tests and classification == "improvement":
+                              write_summary_section(
+                                  summary_file,
+                                  f"✅ {from_state} → {to_state}",
+                                  tests
+                              )
+
+                  # Neutrals (excluding diagonal and new tests)
+                  for from_state in STATES:
+                      for to_state in STATES:
+                          tests = transitions[(from_state, to_state)]
+                          classification = classify_transition(from_state, to_state)
+                          if tests and classification == "neutral":
+                              write_summary_section(
+                                  summary_file,
+                                  f"➡️ {from_state} → {to_state}",
+                                  tests
+                              )
+
+                  # New tests
+                  for to_state in STATES:
+                      if to_state == "Nonexistent":
+                          continue
+                      tests = transitions[("Nonexistent", to_state)]
+                      if tests:
+                          write_summary_section(
+                              summary_file,
+                              f"🆕 New {to_state}",
+                              tests
+                          )
+
+          # Console output
+          print("📊 Regression Matrix:")
+          for line in build_matrix_table():
+              print(f"  {line}")
+
+          if discovery_warnings:
+              print(f"\n⚠️ New Discovery Warnings: {len(discovery_warnings)}")
+
           if has_regressions:
-              print(f"❌ Total regressions detected: {regression_count}")
+              print(f"\n❌ Total regressions detected: {regression_count}")
           else:
-              print("✅ No regressions detected in monitored categories.")
+              print("\n✅ No regressions detected.")
 
           def sanitize(value: str) -> str:
               return value.replace("%", "%25").replace("\n", "%0A").replace("\r", "%0D")
 
+          # Backwards compatible outputs plus new matrix counts
+          pass_to_skip = transitions[("Pass", "Skip")] + transitions[("Pass", "XFail")]
           outputs = {
               "has_regressions": "true" if has_regressions else "false",
               "regression_count": str(regression_count),
-              "pass_to_fail_count": str(len(pass_to_fail)),
+              "pass_to_fail_count": str(len(transitions[("Pass", "Fail")])),
               "pass_to_skip_count": str(len(pass_to_skip)),
-              "pass_to_gone_count": str(len(pass_to_gone)),
-              "fail_to_gone_count": str(len(fail_to_gone)),
-              "discovery_regression_count": str(len(discovery_regressions)),
-              "fail_to_skip_count": str(len(fail_to_skip)),
-              "fail_to_pass_count": str(len(fail_to_pass)),
-              "new_tests_count": str(len(new_tests)),
+              "pass_to_gone_count": str(len(transitions[("Pass", "Nonexistent")])),
+              "fail_to_gone_count": str(len(transitions[("Fail", "Nonexistent")])),
+              "discovery_regression_count": str(len(discovery_warnings)),
+              "fail_to_skip_count": str(len(transitions[("Fail", "Skip")])),
+              "fail_to_pass_count": str(len(transitions[("Fail", "Pass")])),
+              "new_tests_count": str(sum(
+                  len(transitions[("Nonexistent", s)]) for s in STATES if s != "Nonexistent"
+              )),
           }
 
           github_output = os.environ.get("GITHUB_OUTPUT")
