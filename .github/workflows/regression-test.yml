@@ -629,11 +629,11 @@ jobs:
                   if discovery_warnings:
                       summary_file.write(f"\n<details>\n<summary><strong>⚠️ Discovery Warnings</strong> ({len(discovery_warnings)} new)</summary>\n\n")
                       summary_file.write("```\n")
-                      for warning in discovery_warnings[:10]:
+                      for warning in discovery_regressions[:10]:
                           truncated = (warning[:300] + "...") if len(warning) > 300 else warning
                           summary_file.write(f"{truncated}\n\n")
-                      if len(discovery_warnings) > 10:
-                          summary_file.write(f"... and {len(discovery_warnings) - 10} more\n")
+                      if len(discovery_regressions) > 10:
+                          summary_file.write(f"... and {len(discovery_regressions) - 10} more\n")
                       summary_file.write("```\n</details>\n")
 
           if has_regressions:
