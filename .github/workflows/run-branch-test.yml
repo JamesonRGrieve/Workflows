@@ -227,10 +227,14 @@ jobs:
     runs-on: ${{ inputs.runs_on }}
     steps:
       - name: Send notification
-        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "No Discord webhook configured, skipping notification"
+            exit 0
+          fi
+
           MSG="**Pytest Regression Alert**\n"
           MSG+="PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}\n"
           MSG+="\`${{ github.head_ref }}\` → \`${{ inputs.target_branch }}\`\n\n"
