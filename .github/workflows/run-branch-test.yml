@@ -68,134 +68,337 @@ jobs:
       artifact_name: pytest_source_${{ github.event.pull_request.number || github.run_id }}
       parallel_workers: ${{ inputs.parallel_workers }}
 
-  # Check cache for target branch results
-  check-target-cache:
+  # Test target branch with smart caching
+  # Cache check happens AFTER waiting in concurrency queue
+  test-target:
     needs: detect-frameworks
     if: needs.detect-frameworks.outputs.has_pytest == 'true'
     runs-on: ${{ inputs.runs_on }}
+    # Queue concurrent jobs testing same target+SHA
+    # Jobs wait here BEFORE checking cache, so second job finds cache from first
+    concurrency:
+      group: pytest-target-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
+      cancel-in-progress: false
     outputs:
-      cache-hit: ${{ steps.cache.outputs.cache-hit }}
-      total: ${{ steps.load.outputs.total }}
-      passed: ${{ steps.load.outputs.passed }}
-      percentage: ${{ steps.load.outputs.percentage }}
-      collection_errors: ${{ steps.load.outputs.collection_errors }}
-      no_tests_found: ${{ steps.load.outputs.no_tests_found }}
+      total: ${{ steps.results.outputs.total }}
+      passed: ${{ steps.results.outputs.passed }}
+      percentage: ${{ steps.results.outputs.percentage }}
+      collection_errors: ${{ steps.results.outputs.collection_errors }}
+      no_tests_found: ${{ steps.results.outputs.no_tests_found }}
+      has_errors: ${{ steps.results.outputs.has_errors }}
+      error_type: ${{ steps.results.outputs.error_type }}
+      failing_count: ${{ steps.results.outputs.failing_count }}
+      skipped_count: ${{ steps.results.outputs.skipped_count }}
+      xfailed_count: ${{ steps.results.outputs.xfailed_count }}
+
     steps:
-      - name: Check cache
-        id: cache
+      # Check cache AFTER waiting in concurrency queue
+      - name: Check cache for target results
+        id: cache-check
         uses: actions/cache@v4
         with:
           path: cached_target
           key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
-          lookup-only: true
 
-      - name: Restore cache if hit
-        if: steps.cache.outputs.cache-hit == 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: cached_target
-          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
-
-      - name: Load cached outputs
-        id: load
-        if: steps.cache.outputs.cache-hit == 'true'
+      - name: Load cached results
+        id: load-cache
+        if: steps.cache-check.outputs.cache-hit == 'true'
         run: |
+          echo "✅ Cache hit! Loading cached target results (skipping test run)"
           if [ -f cached_target/outputs.env ]; then
-            echo "✅ Loading cached target results"
             cat cached_target/outputs.env >> $GITHUB_OUTPUT
           fi
 
       - name: Upload cached artifact
-        if: steps.cache.outputs.cache-hit == 'true'
+        if: steps.cache-check.outputs.cache-hit == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
           path: cached_target/test_data.json
           if-no-files-found: ignore
 
-  # Test target branch (only if cache miss)
-  test-target:
-    needs: [detect-frameworks, check-target-cache]
-    if: |
-      needs.detect-frameworks.outputs.has_pytest == 'true' &&
-      needs.check-target-cache.outputs.cache-hit != 'true'
-    # Queue concurrent jobs testing same target+SHA
-    concurrency:
-      group: pytest-target-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
-      cancel-in-progress: false
-    uses: ./.github/workflows/test-py-pytest.yml
-    with:
-      ref: ${{ inputs.target_branch }}
-      python-version: ${{ inputs.python-version }}
-      runs_on: ${{ inputs.runs_on }}
-      artifact_name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
-      parallel_workers: ${{ inputs.parallel_workers }}
+      # === Only run tests if cache miss ===
+      - name: Checkout
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
+          ref: ${{ inputs.target_branch }}
 
-  # Save target results to cache (only after fresh test)
-  save-target-cache:
-    needs: [check-target-cache, test-target]
-    if: |
-      always() &&
-      needs.check-target-cache.outputs.cache-hit != 'true' &&
-      needs.test-target.result == 'success'
-    runs-on: ${{ inputs.runs_on }}
-    steps:
-      - name: Download test artifact
-        uses: actions/download-artifact@v4
+      - name: Set up Python
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v5.3.0
+        with:
+          python-version: "${{ inputs.python-version }}"
+
+      - name: Install dependencies
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        run: |
+          echo "📦 Installing dependencies..."
+          python -m pip install --upgrade pip
+          pip install pytest pytest-json-report pytest-asyncio pytest-xdist
+          PYPROJECT=$(find . -name "pyproject.toml" -type f | head -n 1)
+          if [ -n "$PYPROJECT" ]; then
+            pip install -e "$(dirname "$PYPROJECT")[dev]"
+          elif [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Check for test collection errors
+        id: check-collection
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        run: |
+          echo "🔍 Running pytest collection check..."
+          python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
+
+          HAS_COLLECTION_ERRORS="false"
+          NO_TESTS_FOUND="false"
+          ERROR_TYPE="none"
+
+          if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
+            echo "::error::Test discovery errors detected"
+            if grep -q "ImportError" collection_output.txt; then
+              ERROR_TYPE="ImportError"
+            elif grep -q "ModuleNotFoundError" collection_output.txt; then
+              ERROR_TYPE="ModuleNotFoundError"
+            elif grep -q "SyntaxError" collection_output.txt; then
+              ERROR_TYPE="SyntaxError"
+            elif grep -q "ERROR collecting" collection_output.txt; then
+              ERROR_TYPE="CollectionError"
+            elif grep -q "Interrupted:" collection_output.txt; then
+              ERROR_TYPE="Interrupted"
+            else
+              ERROR_TYPE="UnknownError"
+            fi
+            HAS_COLLECTION_ERRORS="true"
+          else
+            TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
+            if [[ "$TEST_COUNT" == "0" ]]; then
+              echo "::warning::No tests were found"
+              NO_TESTS_FOUND="true"
+              ERROR_TYPE="NoTestsFound"
+            else
+              echo "✅ Found $TEST_COUNT tests"
+            fi
+          fi
+
+          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
+          echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
+          echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
+          if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
+            echo "has_errors=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_errors=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run tests
+        id: run-tests
+        continue-on-error: true
+        if: |
+          steps.cache-check.outputs.cache-hit != 'true' &&
+          steps.check-collection.outputs.has_collection_errors != 'true'
+        run: |
+          echo "🧪 Running tests with ${{ inputs.parallel_workers }} workers..."
+          PARALLEL_FLAG=""
+          if [ "${{ inputs.parallel_workers }}" != "1" ]; then
+            PARALLEL_FLAG="-n ${{ inputs.parallel_workers }}"
+          fi
+
+          # Run pytest and capture exit code
+          set +e
+          python -m pytest -vv $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=short 2>&1 | tee test_output.txt
+          PYTEST_EXIT=$?
+          set -e
+
+          echo "pytest_exit_code=$PYTEST_EXIT" >> $GITHUB_OUTPUT
+
+          if [ $PYTEST_EXIT -eq 137 ]; then
+            echo "::warning::Tests were killed (exit 137) - likely OOM. Partial results may be available."
+          fi
+
+          if [ -f results.json ]; then
+            echo "✅ Test execution completed (exit code: $PYTEST_EXIT)"
+          else
+            echo "❌ No results.json - creating empty results file"
+            echo '{"exitcode": '$PYTEST_EXIT', "summary": {"total": 0, "passed": 0}, "tests": []}' > results.json
+          fi
+
+      - name: Extract test results
+        id: extract-results
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        run: |
+          python3 -c "
+          import json
+          import os
+
+          total = passed = 0
+          percentage = 0.0
+          passing_tests = []
+          failing_tests = []
+          skipped_tests = []
+          xfailed_tests = []
+          all_tests = []
+          skipped_with_reasons = {}
+          xfailed_with_reasons = {}
+          warnings_list = []
+
+          try:
+              with open('results.json') as f:
+                  results = json.load(f)
+
+              if results.get('exitcode', 0) <= 1 and 'summary' in results:
+                  summary = results['summary']
+                  total = summary.get('total', 0)
+                  passed = summary.get('passed', 0)
+
+                  for test in results.get('tests', []):
+                      outcome = test.get('outcome')
+                      nodeid = test.get('nodeid', '')
+                      if not nodeid:
+                          continue
+                      all_tests.append(nodeid)
+                      if outcome == 'passed':
+                          passing_tests.append(nodeid)
+                      elif outcome in ['failed', 'error']:
+                          failing_tests.append(nodeid)
+                      elif outcome == 'skipped':
+                          skipped_tests.append(nodeid)
+                          reason = test.get('longrepr', 'No reason')
+                          if isinstance(reason, list):
+                              reason = reason[0] if reason else 'No reason'
+                          skipped_with_reasons[nodeid] = str(reason).strip()
+                      elif outcome == 'xfailed':
+                          xfailed_tests.append(nodeid)
+                          reason = test.get('longrepr', 'No reason')
+                          if isinstance(reason, list):
+                              reason = reason[0] if reason else 'No reason'
+                          xfailed_with_reasons[nodeid] = str(reason).strip()
+
+              percentage = (passed / total * 100) if total > 0 else 0
+          except FileNotFoundError:
+              print('Results file not found')
+          except Exception as e:
+              print(f'Error: {e}')
+
+          # Extract warnings
+          try:
+              with open('test_output.txt') as f:
+                  content = f.read()
+              if 'warnings summary' in content:
+                  section = content.split('warnings summary')[1].split('-- Docs:')[0] if '-- Docs:' in content else content.split('warnings summary')[1]
+                  current = []
+                  for line in section.split('\n'):
+                      line = line.rstrip()
+                      if not line or line.startswith('='):
+                          continue
+                      if not line.startswith(' ') and ('.py:' in line or 'warning' in line.lower()):
+                          if current:
+                              warnings_list.append('\n'.join(current))
+                          current = [line]
+                      elif line.startswith(' ') and current:
+                          current.append(line)
+                  if current:
+                      warnings_list.append('\n'.join(current))
+          except:
+              pass
+
+          # Save artifact data
+          with open('test_data.json', 'w') as f:
+              json.dump({
+                  'passing_tests': passing_tests,
+                  'failing_tests': failing_tests,
+                  'skipped_tests': skipped_tests,
+                  'xfailed_tests': xfailed_tests,
+                  'all_tests': all_tests,
+                  'skipped_tests_with_reasons': skipped_with_reasons,
+                  'xfailed_tests_with_reasons': xfailed_with_reasons,
+                  'warnings': warnings_list
+              }, f, indent=2)
+
+          print(f'Results: {passed}/{total} ({percentage:.1f}%)')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={total}\n')
+              f.write(f'passed={passed}\n')
+              f.write(f'percentage={percentage:.2f}\n')
+              f.write(f'failing_count={len(failing_tests)}\n')
+              f.write(f'skipped_count={len(skipped_tests)}\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\n')
+          "
+
+      - name: Save results to cache
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        run: |
+          echo "💾 Saving results to cache..."
+          mkdir -p cached_target
+
+          # Copy test artifacts to cache directory
+          [ -f test_data.json ] && cp test_data.json cached_target/
+          [ -f test_output.txt ] && cp test_output.txt cached_target/
+          [ -f results.json ] && cp results.json cached_target/
+
+          # Save outputs for future cache loads (no leading spaces!)
+          cat > cached_target/outputs.env << 'EOF'
+          total=${{ steps.extract-results.outputs.total || '0' }}
+          passed=${{ steps.extract-results.outputs.passed || '0' }}
+          percentage=${{ steps.extract-results.outputs.percentage || '0.00' }}
+          collection_errors=${{ steps.check-collection.outputs.has_collection_errors || 'false' }}
+          no_tests_found=${{ steps.check-collection.outputs.no_tests_found || 'false' }}
+          has_errors=${{ steps.check-collection.outputs.has_errors || 'false' }}
+          error_type=${{ steps.check-collection.outputs.error_type || 'none' }}
+          failing_count=${{ steps.extract-results.outputs.failing_count || '0' }}
+          skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}
+          xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}
+          EOF
+          # Remove leading whitespace from the env file
+          sed -i 's/^[[:space:]]*//' cached_target/outputs.env
+
+      - name: Upload test artifacts
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v4
         with:
           name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
-          path: cached_target
+          path: |
+            test_data.json
+            test_output.txt
+            results.json
+          retention-days: 3
+          if-no-files-found: ignore
 
-      - name: Prepare cache data
+      # Consolidate outputs from cache or fresh run
+      - name: Set final outputs
+        id: results
         run: |
-          cat > cached_target/outputs.env << 'EOF'
-          total=${{ needs.test-target.outputs.total }}
-          passed=${{ needs.test-target.outputs.passed }}
-          percentage=${{ needs.test-target.outputs.percentage }}
-          collection_errors=${{ needs.test-target.outputs.collection_errors }}
-          no_tests_found=${{ needs.test-target.outputs.no_tests_found }}
-          EOF
-
-      - name: Save to cache
-        uses: actions/cache/save@v4
-        with:
-          path: cached_target
-          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
-
-  # Consolidate target results (from cache or fresh run)
-  get-target-results:
-    needs: [check-target-cache, test-target]
-    if: always()
-    runs-on: ${{ inputs.runs_on }}
-    outputs:
-      total: ${{ steps.consolidate.outputs.total }}
-      passed: ${{ steps.consolidate.outputs.passed }}
-      percentage: ${{ steps.consolidate.outputs.percentage }}
-      collection_errors: ${{ steps.consolidate.outputs.collection_errors }}
-      no_tests_found: ${{ steps.consolidate.outputs.no_tests_found }}
-    steps:
-      - name: Consolidate results
-        id: consolidate
-        run: |
-          if [ "${{ needs.check-target-cache.outputs.cache-hit }}" == "true" ]; then
-            echo "Using cached results"
-            echo "total=${{ needs.check-target-cache.outputs.total }}" >> $GITHUB_OUTPUT
-            echo "passed=${{ needs.check-target-cache.outputs.passed }}" >> $GITHUB_OUTPUT
-            echo "percentage=${{ needs.check-target-cache.outputs.percentage }}" >> $GITHUB_OUTPUT
-            echo "collection_errors=${{ needs.check-target-cache.outputs.collection_errors }}" >> $GITHUB_OUTPUT
-            echo "no_tests_found=${{ needs.check-target-cache.outputs.no_tests_found }}" >> $GITHUB_OUTPUT
+          if [ "${{ steps.cache-check.outputs.cache-hit }}" == "true" ]; then
+            echo "📋 Using cached results"
+            # Outputs already set by load-cache step, copy them
+            echo "total=${{ steps.load-cache.outputs.total || '0' }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ steps.load-cache.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ steps.load-cache.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ steps.load-cache.outputs.collection_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ steps.load-cache.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+            echo "has_errors=${{ steps.load-cache.outputs.has_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "error_type=${{ steps.load-cache.outputs.error_type || 'none' }}" >> $GITHUB_OUTPUT
+            echo "failing_count=${{ steps.load-cache.outputs.failing_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "skipped_count=${{ steps.load-cache.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "xfailed_count=${{ steps.load-cache.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
           else
-            echo "Using fresh results"
-            echo "total=${{ needs.test-target.outputs.total || '0' }}" >> $GITHUB_OUTPUT
-            echo "passed=${{ needs.test-target.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
-            echo "percentage=${{ needs.test-target.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
-            echo "collection_errors=${{ needs.test-target.outputs.collection_errors || 'false' }}" >> $GITHUB_OUTPUT
-            echo "no_tests_found=${{ needs.test-target.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+            echo "📋 Using fresh results"
+            echo "total=${{ steps.extract-results.outputs.total || '0' }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ steps.extract-results.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ steps.extract-results.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ steps.check-collection.outputs.has_collection_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ steps.check-collection.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+            echo "has_errors=${{ steps.check-collection.outputs.has_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "error_type=${{ steps.check-collection.outputs.error_type || 'none' }}" >> $GITHUB_OUTPUT
+            echo "failing_count=${{ steps.extract-results.outputs.failing_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
           fi
 
   # Compare results
   compare:
-    needs: [test-source, get-target-results]
+    needs: [test-source, test-target]
     if: always() && needs.test-source.result == 'success'
     uses: ./.github/workflows/regression-test.yml
     with:
@@ -206,21 +409,21 @@ jobs:
       current_label: ${{ github.head_ref || github.ref_name }}
       current_results_artifact: pytest_source_${{ github.event.pull_request.number || github.run_id }}
       current_results_filename: test_data.json
-      baseline_passed: ${{ needs.get-target-results.outputs.passed }}
-      baseline_total: ${{ needs.get-target-results.outputs.total }}
-      baseline_percentage: ${{ needs.get-target-results.outputs.percentage }}
+      baseline_passed: ${{ needs.test-target.outputs.passed }}
+      baseline_total: ${{ needs.test-target.outputs.total }}
+      baseline_percentage: ${{ needs.test-target.outputs.percentage }}
       current_passed: ${{ needs.test-source.outputs.passed }}
       current_total: ${{ needs.test-source.outputs.total }}
       current_percentage: ${{ needs.test-source.outputs.percentage }}
-      baseline_collection_errors: ${{ needs.get-target-results.outputs.collection_errors }}
-      baseline_no_tests_found: ${{ needs.get-target-results.outputs.no_tests_found }}
+      baseline_collection_errors: ${{ needs.test-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.test-target.outputs.no_tests_found }}
       current_collection_errors: ${{ needs.test-source.outputs.collection_errors }}
       current_no_tests_found: ${{ needs.test-source.outputs.no_tests_found }}
       artifact_name: regression_pytest_${{ github.event.pull_request.number || github.run_id }}
 
   # Notify on regressions
   notify:
-    needs: [test-source, get-target-results, compare]
+    needs: [test-source, test-target, compare]
     if: |
       always() &&
       (needs.compare.outputs.has_regressions == 'true' || needs.compare.result == 'failure')
@@ -239,7 +442,7 @@ jobs:
           MSG+="PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}\n"
           MSG+="\`${{ github.head_ref }}\` → \`${{ inputs.target_branch }}\`\n\n"
           MSG+="Source: ${{ needs.test-source.outputs.passed }}/${{ needs.test-source.outputs.total }}\n"
-          MSG+="Target: ${{ needs.get-target-results.outputs.passed }}/${{ needs.get-target-results.outputs.total }}\n"
+          MSG+="Target: ${{ needs.test-target.outputs.passed }}/${{ needs.test-target.outputs.total }}\n"
           MSG+="Regressions: ${{ needs.compare.outputs.regression_count || '?' }}\n\n"
           MSG+="[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
