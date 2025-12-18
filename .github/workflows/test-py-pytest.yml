@@ -151,7 +151,8 @@ jobs:
           if [ "${{ inputs.parallel_workers }}" != "1" ]; then
             PARALLEL_FLAG="-n ${{ inputs.parallel_workers }}"
           fi
-          python -m pytest -vv $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=short > test_output.txt 2>&1 || true
+          # Use tee to show output in real-time while capturing to file
+          python -m pytest -vv $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=short 2>&1 | tee test_output.txt || true
           if [ -f results.json ]; then
             echo "✅ Test execution completed"
           else
