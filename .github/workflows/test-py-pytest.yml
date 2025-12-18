@@ -155,8 +155,9 @@ jobs:
           fi
 
           # Run pytest and capture exit code
+          # Use quiet mode for console (-q) - full details in JSON report
           set +e
-          python -m pytest -vv $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=short 2>&1 | tee test_output.txt
+          python -m pytest -q $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=line 2>&1 | tee test_output.txt
           PYTEST_EXIT=$?
           set -e
 
