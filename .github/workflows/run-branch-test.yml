@@ -69,18 +69,12 @@ jobs:
       parallel_workers: ${{ inputs.parallel_workers }}
 
   # Test target branch with smart caching
-  # Cache check happens AFTER waiting in concurrency queue
-  # - PRs to main: will find cache from cache-main-tests.yml (or wait for it)
-  # - PRs to other branches: cache miss, runs tests normally (not an error)
+  # Cache is shared across PRs targeting same branch+SHA
+  # First PR to run populates cache, subsequent PRs use it if available
   test-target:
     needs: detect-frameworks
     if: needs.detect-frameworks.outputs.has_pytest == 'true'
     runs-on: ${{ inputs.runs_on }}
-    # Queue concurrent jobs testing same target+SHA
-    # Jobs wait here BEFORE checking cache, so second job finds cache from first
-    concurrency:
-      group: pytest-target-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
-      cancel-in-progress: false
     outputs:
       total: ${{ steps.results.outputs.total }}
       passed: ${{ steps.results.outputs.passed }}
