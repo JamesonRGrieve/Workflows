@@ -351,18 +351,13 @@ jobs:
           # Remove leading whitespace from the env file
           sed -i 's/^[[:space:]]*//' cached_target/outputs.env
 
-      # Explicitly save cache (not relying on post-hook) so waiting jobs find it
+      # Explicitly save cache so other PRs can find it
       - name: Upload to cache
         if: steps.cache-check.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
-          path: |
-            test_data.json
-            test_output.txt
-            results.json
-          retention-days: 3
-          if-no-files-found: ignore
+          path: cached_target
+          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
 
       - name: Upload test artifacts
         if: steps.cache-check.outputs.cache-hit != 'true'
