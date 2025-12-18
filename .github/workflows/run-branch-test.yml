@@ -362,8 +362,13 @@ jobs:
         if: steps.cache-check.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: cached_target
-          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
+          name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            test_data.json
+            test_output.txt
+            results.json
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Upload test artifacts
         if: steps.cache-check.outputs.cache-hit != 'true'
