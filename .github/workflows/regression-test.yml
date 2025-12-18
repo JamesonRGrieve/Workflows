@@ -284,12 +284,19 @@ jobs:
           PY
       - name: Analyze regression data
         id: analyze
+        env:
+          BASELINE_LABEL: ${{ inputs.baseline_label }}
+          CURRENT_LABEL: ${{ inputs.current_label }}
         run: |
           python3 - <<'PY'
           import json
           import os
           from pathlib import Path
           from typing import List, TextIO, Dict, Set, Tuple
+
+          # Get branch labels from environment
+          BASELINE_LABEL = os.environ.get("BASELINE_LABEL", "Baseline")
+          CURRENT_LABEL = os.environ.get("CURRENT_LABEL", "Current")
 
           # States ordered from best to worst for matrix display
           # This ordering puts improvements below diagonal, regressions above
@@ -562,8 +569,8 @@ jobs:
           # Build the matrix table for GitHub summary
           def build_matrix_table() -> List[str]:
               """Build markdown matrix table with state transitions."""
-              # Header row
-              header = "| Baseline ↓ / Current → | " + " | ".join(STATES) + " |"
+              # Header row with branch names
+              header = f"| {BASELINE_LABEL} ↓ / {CURRENT_LABEL} → | " + " | ".join(STATES) + " |"
               separator = "| --- | " + " | ".join(["---"] * len(STATES)) + " |"
 
               rows = [header, separator]
