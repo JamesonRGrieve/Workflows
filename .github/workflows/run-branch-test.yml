@@ -95,9 +95,10 @@ jobs:
 
     steps:
       # Check cache AFTER waiting in concurrency queue
+      # Use restore (not combined cache action) to control save timing
       - name: Check cache for target results
         id: cache-check
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: cached_target
           key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
@@ -355,6 +356,14 @@ jobs:
           EOF
           # Remove leading whitespace from the env file
           sed -i 's/^[[:space:]]*//' cached_target/outputs.env
+
+      # Explicitly save cache (not relying on post-hook) so waiting jobs find it
+      - name: Upload to cache
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: cached_target
+          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
 
       - name: Upload test artifacts
         if: steps.cache-check.outputs.cache-hit != 'true'

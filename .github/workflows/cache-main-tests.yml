@@ -31,10 +31,11 @@ jobs:
     steps:
       - name: Check existing cache
         id: cache-check
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: cached_target
           key: pytest-${{ github.ref_name }}-${{ github.sha }}
+          lookup-only: true
 
       - name: Skip if cached
         if: steps.cache-check.outputs.cache-hit == 'true'
@@ -224,5 +225,17 @@ jobs:
           xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}
           ENVEOF
 
+      # Explicitly save cache (not relying on post-hook) so it's available
+      # before concurrency group releases waiting jobs
+      - name: Save cache
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: cached_target
+          key: pytest-${{ github.ref_name }}-${{ github.sha }}
+
+      - name: Confirm cache saved
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        run: |
           echo "✅ Cache saved with key: pytest-${{ github.ref_name }}-${{ github.sha }}"
           echo "PRs targeting this SHA will find and use these results"
