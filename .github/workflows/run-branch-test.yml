@@ -1,0 +1,244 @@
+name: Run Branch Tests with Regression Detection
+
+on:
+  workflow_call:
+    inputs:
+      target_branch:
+        description: "Target branch to compare against (e.g., main)."
+        required: true
+        type: string
+      python-version:
+        description: "Python version for pytest."
+        required: false
+        type: string
+        default: "3.10"
+      runs_on:
+        description: "Runner label."
+        required: false
+        type: string
+        default: "self-hosted"
+      parallel_workers:
+        description: "Number of parallel pytest workers. Use 'auto' for CPU count."
+        required: false
+        type: string
+        default: "auto"
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        required: false
+      DISCORD_USER_MAP:
+        required: false
+    outputs:
+      has_regressions:
+        description: "Whether regressions were detected"
+        value: ${{ jobs.compare.outputs.has_regressions }}
+      regression_count:
+        description: "Number of regressions"
+        value: ${{ jobs.compare.outputs.regression_count }}
+
+jobs:
+  # Detect which test frameworks are present
+  detect-frameworks:
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      has_pytest: ${{ steps.detect.outputs.has_pytest }}
+      # Future: has_jest, has_xunit, etc.
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Detect test frameworks
+        id: detect
+        run: |
+          # Detect pytest
+          if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "requirements.txt" ] || find . -name "test_*.py" -o -name "*_test.py" | head -1 | grep -q .; then
+            echo "has_pytest=true" >> $GITHUB_OUTPUT
+            echo "✅ Detected: pytest"
+          else
+            echo "has_pytest=false" >> $GITHUB_OUTPUT
+          fi
+          # Future: Add jest, xunit, etc. detection
+
+  # Test source branch (always fresh, no caching)
+  test-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_pytest == 'true'
+    uses: ./.github/workflows/test-py-pytest.yml
+    with:
+      ref: ""  # Default checkout = PR branch
+      python-version: ${{ inputs.python-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: pytest_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Check cache for target branch results
+  check-target-cache:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_pytest == 'true'
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      cache-hit: ${{ steps.cache.outputs.cache-hit }}
+      total: ${{ steps.load.outputs.total }}
+      passed: ${{ steps.load.outputs.passed }}
+      percentage: ${{ steps.load.outputs.percentage }}
+      collection_errors: ${{ steps.load.outputs.collection_errors }}
+      no_tests_found: ${{ steps.load.outputs.no_tests_found }}
+    steps:
+      - name: Check cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: cached_target
+          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
+          lookup-only: true
+
+      - name: Restore cache if hit
+        if: steps.cache.outputs.cache-hit == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_target
+          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
+
+      - name: Load cached outputs
+        id: load
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: |
+          if [ -f cached_target/outputs.env ]; then
+            echo "✅ Loading cached target results"
+            cat cached_target/outputs.env >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload cached artifact
+        if: steps.cache.outputs.cache-hit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
+          path: cached_target/test_data.json
+          if-no-files-found: ignore
+
+  # Test target branch (only if cache miss)
+  test-target:
+    needs: [detect-frameworks, check-target-cache]
+    if: |
+      needs.detect-frameworks.outputs.has_pytest == 'true' &&
+      needs.check-target-cache.outputs.cache-hit != 'true'
+    # Queue concurrent jobs testing same target+SHA
+    concurrency:
+      group: pytest-target-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
+      cancel-in-progress: false
+    uses: ./.github/workflows/test-py-pytest.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      python-version: ${{ inputs.python-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Save target results to cache (only after fresh test)
+  save-target-cache:
+    needs: [check-target-cache, test-target]
+    if: |
+      always() &&
+      needs.check-target-cache.outputs.cache-hit != 'true' &&
+      needs.test-target.result == 'success'
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - name: Download test artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
+          path: cached_target
+
+      - name: Prepare cache data
+        run: |
+          cat > cached_target/outputs.env << 'EOF'
+          total=${{ needs.test-target.outputs.total }}
+          passed=${{ needs.test-target.outputs.passed }}
+          percentage=${{ needs.test-target.outputs.percentage }}
+          collection_errors=${{ needs.test-target.outputs.collection_errors }}
+          no_tests_found=${{ needs.test-target.outputs.no_tests_found }}
+          EOF
+
+      - name: Save to cache
+        uses: actions/cache/save@v4
+        with:
+          path: cached_target
+          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
+
+  # Consolidate target results (from cache or fresh run)
+  get-target-results:
+    needs: [check-target-cache, test-target]
+    if: always()
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      total: ${{ steps.consolidate.outputs.total }}
+      passed: ${{ steps.consolidate.outputs.passed }}
+      percentage: ${{ steps.consolidate.outputs.percentage }}
+      collection_errors: ${{ steps.consolidate.outputs.collection_errors }}
+      no_tests_found: ${{ steps.consolidate.outputs.no_tests_found }}
+    steps:
+      - name: Consolidate results
+        id: consolidate
+        run: |
+          if [ "${{ needs.check-target-cache.outputs.cache-hit }}" == "true" ]; then
+            echo "Using cached results"
+            echo "total=${{ needs.check-target-cache.outputs.total }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ needs.check-target-cache.outputs.passed }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ needs.check-target-cache.outputs.percentage }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ needs.check-target-cache.outputs.collection_errors }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ needs.check-target-cache.outputs.no_tests_found }}" >> $GITHUB_OUTPUT
+          else
+            echo "Using fresh results"
+            echo "total=${{ needs.test-target.outputs.total || '0' }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ needs.test-target.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ needs.test-target.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ needs.test-target.outputs.collection_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ needs.test-target.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+          fi
+
+  # Compare results
+  compare:
+    needs: [test-source, get-target-results]
+    if: always() && needs.test-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: pytest_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: pytest_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.get-target-results.outputs.passed }}
+      baseline_total: ${{ needs.get-target-results.outputs.total }}
+      baseline_percentage: ${{ needs.get-target-results.outputs.percentage }}
+      current_passed: ${{ needs.test-source.outputs.passed }}
+      current_total: ${{ needs.test-source.outputs.total }}
+      current_percentage: ${{ needs.test-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.get-target-results.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.get-target-results.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.test-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.test-source.outputs.no_tests_found }}
+      artifact_name: regression_pytest_${{ github.event.pull_request.number || github.run_id }}
+
+  # Notify on regressions
+  notify:
+    needs: [test-source, get-target-results, compare]
+    if: |
+      always() &&
+      (needs.compare.outputs.has_regressions == 'true' || needs.compare.result == 'failure')
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - name: Send notification
+        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          MSG="**Pytest Regression Alert**\n"
+          MSG+="PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}\n"
+          MSG+="\`${{ github.head_ref }}\` → \`${{ inputs.target_branch }}\`\n\n"
+          MSG+="Source: ${{ needs.test-source.outputs.passed }}/${{ needs.test-source.outputs.total }}\n"
+          MSG+="Target: ${{ needs.get-target-results.outputs.passed }}/${{ needs.get-target-results.outputs.total }}\n"
+          MSG+="Regressions: ${{ needs.compare.outputs.regression_count || '?' }}\n\n"
+          MSG+="[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"content\": \"$(echo -e "$MSG")\"}" \
+            "$WEBHOOK" || true

@@ -1,67 +1,66 @@
-name: Reusable Compare Pytest Results
+name: Reusable Pytest Runner
 
 on:
   workflow_call:
     inputs:
-      target_branch_to_compare:
-        description: "The target branch to compare against (e.g., main, refs/heads/main)."
-        required: true
+      ref:
+        description: "Git ref to checkout and test. Leave empty for default checkout."
+        required: false
         type: string
+        default: ""
       python-version:
         description: "Python version to use for testing."
         required: false
         type: string
         default: "3.10"
-      ping_latest_committer:
-        description: "If true, the latest committer on the PR will be added to the ping list."
-        required: false
-        type: boolean
-        default: false
       runs_on:
+        description: "Runner label for the test job."
         required: false
         type: string
         default: "self-hosted"
-    secrets:
-      DISCORD_WEBHOOK_URL:
-        description: "Discord Webhook URL for failure notifications. If not provided, notifications are skipped."
+      artifact_name:
+        description: "Name for the test results artifact."
+        required: true
+        type: string
+      parallel_workers:
+        description: "Number of parallel workers for pytest-xdist. Use 'auto' for CPU count, or a number. Set to '1' to disable."
         required: false
-      DISCORD_USER_MAP:
-        description: 'JSON string mapping GitHub usernames to Discord User IDs (e.g., {"user1":"id1"}). If not provided, users won''t be pinged.'
-        required: false
+        type: string
+        default: "auto"
     outputs:
-      pr_total:
-        description: "Total tests in PR/source branch"
-        value: ${{ jobs.test-source-branch.outputs.total }}
-      pr_passed:
-        description: "Passed tests in PR/source branch"
-        value: ${{ jobs.test-source-branch.outputs.passed }}
-      pr_percentage:
-        description: "Pass percentage in PR/source branch"
-        value: ${{ jobs.test-source-branch.outputs.percentage }}
-      pr_collection_errors:
-        description: "PR branch has collection errors"
-        value: ${{ jobs.test-source-branch.outputs.collection_errors }}
-      pr_no_tests_found:
-        description: "PR branch has no tests found"
-        value: ${{ jobs.test-source-branch.outputs.no_tests_found }}
-      target_total:
-        description: "Total tests in target branch"
-        value: ${{ jobs.test-target-branch.outputs.total }}
-      target_passed:
-        description: "Passed tests in target branch"
-        value: ${{ jobs.test-target-branch.outputs.passed }}
-      target_percentage:
-        description: "Pass percentage in target branch"
-        value: ${{ jobs.test-target-branch.outputs.percentage }}
-      has_regressions:
-        description: "Boolean indicating if regressions were found"
-        value: ${{ jobs.compare-results.outputs.has_regressions }}
-      regression_count:
-        description: "Number of test regressions found"
-        value: ${{ jobs.compare-results.outputs.regression_count }}
+      total:
+        description: "Total number of tests"
+        value: ${{ jobs.test.outputs.total }}
+      passed:
+        description: "Number of passing tests"
+        value: ${{ jobs.test.outputs.passed }}
+      percentage:
+        description: "Pass percentage"
+        value: ${{ jobs.test.outputs.percentage }}
+      collection_errors:
+        description: "Whether collection errors occurred"
+        value: ${{ jobs.test.outputs.collection_errors }}
+      no_tests_found:
+        description: "Whether no tests were found"
+        value: ${{ jobs.test.outputs.no_tests_found }}
+      has_errors:
+        description: "Whether any errors occurred"
+        value: ${{ jobs.test.outputs.has_errors }}
+      error_type:
+        description: "Type of error if any"
+        value: ${{ jobs.test.outputs.error_type }}
+      failing_count:
+        description: "Number of failing tests"
+        value: ${{ jobs.test.outputs.failing_count }}
+      skipped_count:
+        description: "Number of skipped tests"
+        value: ${{ jobs.test.outputs.skipped_count }}
+      xfailed_count:
+        description: "Number of xfailed tests"
+        value: ${{ jobs.test.outputs.xfailed_count }}
 
 jobs:
-  test-source-branch:
+  test:
     runs-on: ${{ inputs.runs_on }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
@@ -71,16 +70,16 @@ jobs:
       no_tests_found: ${{ steps.check-collection.outputs.no_tests_found }}
       has_errors: ${{ steps.check-collection.outputs.has_errors }}
       error_type: ${{ steps.check-collection.outputs.error_type }}
-      error_details: ${{ steps.check-collection.outputs.error_details }}
       failing_count: ${{ steps.extract-results.outputs.failing_count }}
       skipped_count: ${{ steps.extract-results.outputs.skipped_count }}
       xfailed_count: ${{ steps.extract-results.outputs.xfailed_count }}
 
     steps:
-      - name: Checkout PR Branch
+      - name: Checkout
         uses: actions/checkout@v4.2.2
         with:
           submodules: "recursive"
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5.3.0
@@ -90,14 +89,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-json-report pytest-asyncio
+          pip install pytest pytest-json-report pytest-asyncio pytest-xdist
           PYPROJECT=$(find . -name "pyproject.toml" -type f | head -n 1)
           if [ -n "$PYPROJECT" ]; then
             pip install -e "$(dirname "$PYPROJECT")[dev]"
           elif [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
-          cd src
 
       - name: Check for test collection errors
         id: check-collection
@@ -105,16 +103,12 @@ jobs:
           echo "Running pytest collection check..."
           python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
 
-          # Set default values
           HAS_COLLECTION_ERRORS="false"
           NO_TESTS_FOUND="false"
           ERROR_TYPE="none"
-          ERROR_DETAILS="none"
 
           if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
-            echo "::error::Test discovery errors detected in PR branch - Python modules could not be imported correctly"
-            
-            # Attempt to identify specific error type
+            echo "::error::Test discovery errors detected"
             if grep -q "ImportError" collection_output.txt; then
               ERROR_TYPE="ImportError"
             elif grep -q "ModuleNotFoundError" collection_output.txt; then
@@ -125,1067 +119,155 @@ jobs:
               ERROR_TYPE="CollectionError"
             elif grep -q "Interrupted:" collection_output.txt; then
               ERROR_TYPE="Interrupted"
-            else 
+            else
               ERROR_TYPE="UnknownError"
             fi
-            
-            echo "PR branch discovery error type: $ERROR_TYPE"
-            
-            ERROR_FILE=$(grep -o "ERROR collecting.*\.py" collection_output.txt | grep -o "[a-zA-Z0-9_/]*\.py" || echo "Unknown file")
-            
-            if [[ "$ERROR_FILE" != "Unknown file" ]]; then
-              echo "Error in file $ERROR_FILE"
-              grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-            else
-              grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-            fi
-            
-            echo "::error::PR branch discovery error details: ${ERROR_DETAILS:0:200}..."
             HAS_COLLECTION_ERRORS="true"
           else
-            echo "No discovery errors detected in PR branch"
-            
             TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
-            
             if [[ "$TEST_COUNT" == "0" ]]; then
-              echo "::warning::No tests were found in the PR branch"
+              echo "::warning::No tests were found"
               NO_TESTS_FOUND="true"
               ERROR_TYPE="NoTestsFound"
-              ERROR_DETAILS="No test files were discovered that match pytest's test discovery pattern"
-            else  
-              echo "Found $TEST_COUNT tests in PR branch"
+            else
+              echo "Found $TEST_COUNT tests"
             fi
           fi
 
-          # Set all the outputs
           echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
           echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
           echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
-          echo "error_details=$ERROR_DETAILS" >> $GITHUB_OUTPUT
-
-          # For backward compatibility
           if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
             echo "has_errors=true" >> $GITHUB_OUTPUT
           else
             echo "has_errors=false" >> $GITHUB_OUTPUT
           fi
 
-          # Clean summary output
-          if [[ "$HAS_COLLECTION_ERRORS" == "true" ]]; then
-            echo "❌ Discovery Error: $ERROR_TYPE"
-          elif [[ "$NO_TESTS_FOUND" == "true" ]]; then
-            echo "⚠️ No Tests Found"
-          else
-            echo "✅ Discovery Success"
-          fi
-
-      - name: Run tests on PR Branch
+      - name: Run tests
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          echo "Running tests on PR branch..."
-          python -m pytest -vv --json-report --json-report-file=pr_results.json --tb=short > test_output.txt 2>&1 || true
-
-          if [ -f pr_results.json ]; then
+          echo "Running tests with ${{ inputs.parallel_workers }} workers..."
+          PARALLEL_FLAG=""
+          if [ "${{ inputs.parallel_workers }}" != "1" ]; then
+            PARALLEL_FLAG="-n ${{ inputs.parallel_workers }}"
+          fi
+          python -m pytest -vv $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=short > test_output.txt 2>&1 || true
+          if [ -f results.json ]; then
             echo "✅ Test execution completed"
           else
             echo "❌ Test execution failed"
           fi
 
-      - name: Extract test results and create artifacts
+      - name: Extract test results
         id: extract-results
         run: |
-          echo "PR_BRANCH=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_ENV
-
-          python -c "
+          python3 -c "
           import json
-          import sys
           import os
 
-          # Default values in case file doesn't exist or is invalid
-          pr_total = 0
-          pr_passed = 0
-          pr_percentage = 0
+          total = passed = 0
+          percentage = 0.0
+          passing_tests = []
           failing_tests = []
           skipped_tests = []
           xfailed_tests = []
           all_tests = []
-          passing_tests = []
-          skipped_tests_with_reasons = {}
-          xfailed_tests_with_reasons = {}
-
-          try:
-              print('Attempting to open pr_results.json')
-              with open('pr_results.json') as f:
-                  pr_results = json.load(f)
-                  print(f'JSON loaded successfully, keys: {list(pr_results.keys())}')
-              
-              # Check for collection errors by looking at exitcode or error patterns
-              if pr_results.get('exitcode', 0) > 1:
-                  print('Detected non-zero exitcode, likely a collection error')
-                  if 'collectors' in pr_results and pr_results['collectors']:
-                      print(f'Collection errors found: {pr_results["collectors"]}')
-                  pr_total = 0  # Explicitly set to 0 - no tests run when collection fails
-                  pr_passed = 0
-              elif 'summary' in pr_results and isinstance(pr_results['summary'], dict):
-                  # Normal case - extract data from summary
-                  summary = pr_results['summary']
-                  pr_total = summary.get('total', 0)
-                  pr_passed = summary.get('passed', 0)
-                  print(f'Results extracted from summary - Total: {pr_total}, Passed: {pr_passed}')
-                  
-                  # Extract all tests by outcome and collect all test nodeids with reasons
-                  if 'tests' in pr_results:
-                      print('Extracting failing, skipped, xfailed, and all tests with reasons')
-                      for test in pr_results['tests']:
-                          outcome = test.get('outcome')
-                          nodeid = test.get('nodeid', '')
-                          if nodeid:
-                              all_tests.append(nodeid)  # Track all tests regardless of outcome
-                              if outcome == 'passed':
-                                  passing_tests.append(nodeid)
-                              elif outcome in ['failed', 'error']:
-                                  failing_tests.append(nodeid)
-                              elif outcome == 'skipped':
-                                  skipped_tests.append(nodeid)
-                                  # Extract skip reason
-                                  skip_reason = 'No reason provided'
-                                  if 'longrepr' in test and test['longrepr']:
-                                      # longrepr can be a string or list, handle both
-                                      longrepr = test['longrepr']
-                                      if isinstance(longrepr, list) and longrepr:
-                                          skip_reason = str(longrepr[0]) if longrepr[0] else 'No reason provided'
-                                      elif isinstance(longrepr, str):
-                                          skip_reason = longrepr
-                                  elif 'call' in test and test['call'] and 'longrepr' in test['call']:
-                                      skip_reason = str(test['call']['longrepr'])
-                                  skipped_tests_with_reasons[nodeid] = skip_reason.strip()
-                              elif outcome == 'xfailed':
-                                  xfailed_tests.append(nodeid)
-                                  # Extract xfail reason
-                                  xfail_reason = 'No reason provided'
-                                  if 'longrepr' in test and test['longrepr']:
-                                      longrepr = test['longrepr']
-                                      if isinstance(longrepr, list) and longrepr:
-                                          xfail_reason = str(longrepr[0]) if longrepr[0] else 'No reason provided'
-                                      elif isinstance(longrepr, str):
-                                          xfail_reason = longrepr
-                                  elif 'call' in test and test['call'] and 'longrepr' in test['call']:
-                                      xfail_reason = str(test['call']['longrepr'])
-                                  xfailed_tests_with_reasons[nodeid] = xfail_reason.strip()
-                      
-                      print(f'Found {len(passing_tests)} passing tests')
-                      print(f'Found {len(failing_tests)} failing tests')
-                      print(f'Found {len(skipped_tests)} skipped tests')
-                      print(f'Found {len(xfailed_tests)} xfailed tests')
-                      print(f'Found {len(all_tests)} total discovered tests')
-              else:
-                  print('No valid summary structure found')
-              
-              # Calculate percentage safely
-              pr_percentage = (pr_passed / pr_total * 100) if pr_total > 0 else 0
-              print(f'Pass percentage calculated: {pr_percentage:.2f}%')
-              
-          except FileNotFoundError as e:
-              print(f'File not found error: {e}')
-          except KeyError as e:
-              print(f'Missing key in results file: {e}')
-              if 'pr_results' in locals():
-                  print(f'Available keys: {list(pr_results.keys())}')
-                  if 'summary' in pr_results:
-                      print(f'Summary structure: {pr_results["summary"]}')
-          except Exception as e:
-              print(f'Error processing results: {e}')
-              import traceback
-              print(f'Full exception: {traceback.format_exc()}')
-
-          print(f'Total tests: {pr_total}')
-          print(f'Passed tests: {pr_passed}')
-          print(f'Pass percentage: {pr_percentage:.2f}%')
-          print(f'Failing tests: {len(failing_tests)}')
-          print(f'Skipped tests: {len(skipped_tests)}')
-          print(f'Xfailed tests: {len(xfailed_tests)}')
-          print(f'All discovered tests: {len(all_tests)}')
-
-          # Extract warnings from test output
+          skipped_with_reasons = {}
+          xfailed_with_reasons = {}
           warnings_list = []
+
           try:
-              with open('test_output.txt', 'r') as f:
-                  content = f.read()
-                  # Extract warnings section
-                  if '============================== warnings summary ===============================' in content:
-                      warnings_section = content.split('============================== warnings summary ===============================')[1]
-                      if '-- Docs:' in warnings_section:
-                          warnings_section = warnings_section.split('-- Docs:')[0]
-                      
-                      # Parse warnings - format is file path followed by indented warning details
-                      lines = warnings_section.split('\\n')
-                      current_warning_group = []
-                      
-                      for line in lines:
-                          line = line.rstrip()
-                          if not line or line.startswith('='):
-                              continue
-                          
-                          # Check if this is a file path (starts at column 0, ends with .py: or contains warning count)
-                          if not line.startswith(' ') and ('.py:' in line or 'warnings' in line):
-                              # Save previous warning group if exists
-                              if current_warning_group:
-                                  warnings_list.append('\\n'.join(current_warning_group))
-                              # Start new warning group
-                              current_warning_group = [line]
-                          elif line.startswith(' ') and current_warning_group:
-                              # This is part of the current warning (indented line)
-                              current_warning_group.append(line)
-                      
-                      # Don't forget the last warning group
-                      if current_warning_group:
-                          warnings_list.append('\\n'.join(current_warning_group))
-              
-              print(f'Extracted {len(warnings_list)} warning groups from test output')
+              with open('results.json') as f:
+                  results = json.load(f)
+
+              if results.get('exitcode', 0) <= 1 and 'summary' in results:
+                  summary = results['summary']
+                  total = summary.get('total', 0)
+                  passed = summary.get('passed', 0)
+
+                  for test in results.get('tests', []):
+                      outcome = test.get('outcome')
+                      nodeid = test.get('nodeid', '')
+                      if not nodeid:
+                          continue
+                      all_tests.append(nodeid)
+                      if outcome == 'passed':
+                          passing_tests.append(nodeid)
+                      elif outcome in ['failed', 'error']:
+                          failing_tests.append(nodeid)
+                      elif outcome == 'skipped':
+                          skipped_tests.append(nodeid)
+                          reason = test.get('longrepr', 'No reason')
+                          if isinstance(reason, list):
+                              reason = reason[0] if reason else 'No reason'
+                          skipped_with_reasons[nodeid] = str(reason).strip()
+                      elif outcome == 'xfailed':
+                          xfailed_tests.append(nodeid)
+                          reason = test.get('longrepr', 'No reason')
+                          if isinstance(reason, list):
+                              reason = reason[0] if reason else 'No reason'
+                          xfailed_with_reasons[nodeid] = str(reason).strip()
+
+              percentage = (passed / total * 100) if total > 0 else 0
+          except FileNotFoundError:
+              print('Results file not found')
           except Exception as e:
-              print(f'Could not extract warnings: {e}')
+              print(f'Error: {e}')
 
-          # Save test lists to artifact files instead of job outputs
-          test_data = {
-              'passing_tests': passing_tests,
-              'failing_tests': failing_tests,
-              'skipped_tests': skipped_tests,
-              'xfailed_tests': xfailed_tests,
-              'all_tests': all_tests,
-              'skipped_tests_with_reasons': skipped_tests_with_reasons,
-              'xfailed_tests_with_reasons': xfailed_tests_with_reasons,
-              'warnings': warnings_list
-          }
+          # Extract warnings
+          try:
+              with open('test_output.txt') as f:
+                  content = f.read()
+              if 'warnings summary' in content:
+                  section = content.split('warnings summary')[1].split('-- Docs:')[0] if '-- Docs:' in content else content.split('warnings summary')[1]
+                  current = []
+                  for line in section.split('\n'):
+                      line = line.rstrip()
+                      if not line or line.startswith('='):
+                          continue
+                      if not line.startswith(' ') and ('.py:' in line or 'warning' in line.lower()):
+                          if current:
+                              warnings_list.append('\n'.join(current))
+                          current = [line]
+                      elif line.startswith(' ') and current:
+                          current.append(line)
+                  if current:
+                      warnings_list.append('\n'.join(current))
+          except:
+              pass
 
-          with open('pr_test_data.json', 'w') as f:
-              json.dump(test_data, f, indent=2)
+          # Save artifact data
+          with open('test_data.json', 'w') as f:
+              json.dump({
+                  'passing_tests': passing_tests,
+                  'failing_tests': failing_tests,
+                  'skipped_tests': skipped_tests,
+                  'xfailed_tests': xfailed_tests,
+                  'all_tests': all_tests,
+                  'skipped_tests_with_reasons': skipped_with_reasons,
+                  'xfailed_tests_with_reasons': xfailed_with_reasons,
+                  'warnings': warnings_list
+              }, f, indent=2)
 
-          print('Test data saved to pr_test_data.json for artifact')
-          print('Results extraction completed')
+          print(f'Results: {passed}/{total} ({percentage:.1f}%)')
 
-          # Set scalar outputs only (no large arrays)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'total={pr_total}\\n')
-              f.write(f'passed={pr_passed}\\n')
-              f.write(f'percentage={pr_percentage:.2f}\\n')
-              f.write(f'failing_count={len(failing_tests)}\\n')
-              f.write(f'skipped_count={len(skipped_tests)}\\n')
-              f.write(f'xfailed_count={len(xfailed_tests)}\\n')
+              f.write(f'total={total}\n')
+              f.write(f'passed={passed}\n')
+              f.write(f'percentage={percentage:.2f}\n')
+              f.write(f'failing_count={len(failing_tests)}\n')
+              f.write(f'skipped_count={len(skipped_tests)}\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\n')
           "
 
-          echo "✅ Test results: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} passed (${{ steps.extract-results.outputs.percentage }}%)"
-
-      - name: Upload PR branch artifacts
+      - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
+          name: ${{ inputs.artifact_name }}
           path: |
-            pr_test_data.json
+            test_data.json
             test_output.txt
-            pr_results.json
+            results.json
           retention-days: 3
           if-no-files-found: ignore
-
-  test-target-branch:
-    runs-on: ${{ inputs.runs_on }}
-    outputs:
-      total: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.total || steps.extract-results.outputs.total }}
-      passed: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passed || steps.extract-results.outputs.passed }}
-      percentage: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.percentage || steps.extract-results.outputs.percentage }}
-      collection_errors: ${{ steps.check-collection.outputs.has_collection_errors }}
-      no_tests_found: ${{ steps.check-collection.outputs.no_tests_found }}
-      has_errors: ${{ steps.check-collection.outputs.has_errors }}
-      error_type: ${{ steps.check-collection.outputs.error_type }}
-      error_details: ${{ steps.check-collection.outputs.error_details }}
-      passing_count: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passing_count || steps.extract-results.outputs.passing_count }}
-
-    steps:
-      - name: Checkout target branch
-        uses: actions/checkout@v4.2.2
-        with:
-          submodules: "recursive"
-          ref: ${{ inputs.target_branch_to_compare }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5.3.0
-        with:
-          python-version: "${{ inputs.python-version }}"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-json-report pytest-asyncio
-          PYPROJECT=$(find . -name "pyproject.toml" -type f | head -n 1)
-          if [ -n "$PYPROJECT" ]; then
-            pip install -e "$(dirname "$PYPROJECT")[dev]"
-          elif [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-          cd src
-
-      - name: Check for test collection errors
-        id: check-collection
-        run: |
-          echo "Running pytest collection check..."
-          python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
-
-          # Set default values
-          HAS_COLLECTION_ERRORS="false"
-          NO_TESTS_FOUND="false"
-          ERROR_TYPE="none"
-          ERROR_DETAILS="none"
-
-          if grep -q "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt; then
-            echo "::warning::Test discovery errors detected in target branch - Python modules could not be imported correctly"
-            
-            # Attempt to identify specific error type
-            if grep -q "ImportError" collection_output.txt; then
-              ERROR_TYPE="ImportError"
-            elif grep -q "ModuleNotFoundError" collection_output.txt; then
-              ERROR_TYPE="ModuleNotFoundError"
-            elif grep -q "SyntaxError" collection_output.txt; then
-              ERROR_TYPE="SyntaxError"
-            elif grep -q "ERROR collecting" collection_output.txt; then
-              ERROR_TYPE="CollectionError"
-            elif grep -q "Interrupted:" collection_output.txt; then
-              ERROR_TYPE="Interrupted"
-            else 
-              ERROR_TYPE="UnknownError"
-            fi
-            
-            echo "Target branch discovery error type: $ERROR_TYPE"
-            
-            ERROR_FILE=$(grep -o "ERROR collecting.*\.py" collection_output.txt | grep -o "[a-zA-Z0-9_/]*\.py" || echo "Unknown file")
-            
-            if [[ "$ERROR_FILE" != "Unknown file" ]]; then
-              echo "Error in file $ERROR_FILE"
-              grep -A 15 "$ERROR_FILE" collection_output.txt > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-            else
-              grep -A 15 "ImportError\|ModuleNotFoundError\|SyntaxError\|ERROR collecting\|Interrupted:" collection_output.txt | head -20 > error_details.txt
-              ERROR_DETAILS=$(cat error_details.txt | tr '\n' ' ' | sed 's/"/\\"/g')
-            fi
-            
-            echo "::warning::Target branch discovery error details: ${ERROR_DETAILS:0:200}..."
-            HAS_COLLECTION_ERRORS="true"
-          else
-            echo "No discovery errors detected in target branch"
-            
-            TEST_COUNT=$(grep -o "collected [0-9]* item" collection_output.txt | grep -o "[0-9]*" || echo "0")
-            
-            if [[ "$TEST_COUNT" == "0" ]]; then
-              echo "::warning::No tests were found in the target branch"
-              NO_TESTS_FOUND="true"
-              ERROR_TYPE="NoTestsFound"
-              ERROR_DETAILS="No test files were discovered in target branch that match pytest's test discovery pattern"
-            else  
-              echo "Found $TEST_COUNT tests in target branch"
-            fi
-          fi
-
-          # Set all the outputs
-          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
-          echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
-          echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
-          echo "error_details=$ERROR_DETAILS" >> $GITHUB_OUTPUT
-
-          # For backward compatibility
-          if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
-            echo "has_errors=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_errors=false" >> $GITHUB_OUTPUT
-          fi
-
-          # Save full collection output to debug file for artifact
-          echo "=== FULL COLLECTION OUTPUT ===" >> debug_target_collection.log
-          cat collection_output.txt >> debug_target_collection.log
-
-      - name: Run tests on target branch
-        if: steps.check-collection.outputs.has_collection_errors != 'true'
-        run: |
-          echo "Running tests on target branch..."
-          python -m pytest -vv --json-report --json-report-file=target_results.json --tb=short > target_test_output.txt 2>&1 || true
-
-          if [ -f target_results.json ]; then
-            echo "✅ Test execution completed"
-          else
-            echo "❌ Test execution failed"
-          fi
-
-      - name: Extract test results and create artifacts
-        id: extract-results
-        # Only run if there were no collection errors
-        if: steps.check-collection.outputs.has_collection_errors != 'true'
-        run: |
-          echo "Processing test results for target branch: ${{ inputs.target_branch_to_compare }}"
-
-          python -c "
-          import json
-          import sys
-          import os
-
-          print('Starting test results extraction script for target branch')
-
-          # Default values in case file doesn't exist or is invalid
-          target_total = 0
-          target_passed = 0
-          target_percentage = 0
-          passing_tests = []
-          failing_tests = []
-          skipped_tests = []
-          xfailed_tests = []
-          all_tests = []
-
-          try:
-              print('Attempting to open target_results.json')
-              with open('target_results.json') as f:
-                  target_results = json.load(f)
-                  print(f'JSON loaded successfully, keys: {list(target_results.keys())}')
-              
-              # Check for collection errors by looking at exitcode or error patterns
-              if target_results.get('exitcode', 0) > 1:
-                  print('Detected non-zero exitcode, likely a collection error')
-                  if 'collectors' in target_results and target_results['collectors']:
-                      print(f'Collection errors found: {target_results["collectors"]}')
-                  target_total = 0  # Explicitly set to 0 - no tests run when collection fails
-                  target_passed = 0
-              elif 'summary' in target_results and isinstance(target_results['summary'], dict):
-                  # Normal case - extract data from summary
-                  summary = target_results['summary']
-                  target_total = summary.get('total', 0)
-                  target_passed = summary.get('passed', 0)
-                  print(f'Results extracted from summary - Total: {target_total}, Passed: {target_passed}')
-                  
-                  # Extract all test outcomes
-                  if 'tests' in target_results:
-                      print('Extracting all test outcomes from target')
-                      for test in target_results['tests']:
-                          outcome = test.get('outcome')
-                          nodeid = test.get('nodeid', '')
-                          if nodeid:
-                              all_tests.append(nodeid)  # Track all tests regardless of outcome
-                              if outcome == 'passed':
-                                  passing_tests.append(nodeid)
-                              elif outcome in ['failed', 'error']:
-                                  failing_tests.append(nodeid)
-                              elif outcome == 'skipped':
-                                  skipped_tests.append(nodeid)
-                              elif outcome == 'xfailed':
-                                  xfailed_tests.append(nodeid)
-                      
-                      print(f'Found {len(passing_tests)} passing tests')
-                      print(f'Found {len(failing_tests)} failing tests')
-                      print(f'Found {len(skipped_tests)} skipped tests')
-                      print(f'Found {len(xfailed_tests)} xfailed tests')
-                      print(f'Found {len(all_tests)} total discovered tests')
-              else:
-                  print('No valid summary structure found')
-              
-              # Calculate percentage safely
-              target_percentage = (target_passed / target_total * 100) if target_total > 0 else 0
-              print(f'Pass percentage calculated: {target_percentage:.2f}%')
-              
-          except FileNotFoundError as e:
-              print(f'File not found error: {e}')
-          except KeyError as e:
-              print(f'Missing key in results file: {e}')
-              if 'target_results' in locals():
-                  print(f'Available keys: {list(target_results.keys())}')
-                  if 'summary' in target_results:
-                      print(f'Summary structure: {target_results["summary"]}')
-          except Exception as e:
-              print(f'Error processing results: {e}')
-              import traceback
-              print(f'Full exception: {traceback.format_exc()}')
-
-          print(f'Total tests: {target_total}')
-          print(f'Passed tests: {target_passed}')
-          print(f'Pass percentage: {target_percentage:.2f}%')
-          print(f'Passing tests: {len(passing_tests)}')
-          print(f'All discovered tests: {len(all_tests)}')
-
-          # Extract warnings from test output
-          warnings_list = []
-          try:
-              with open('target_test_output.txt', 'r') as f:
-                  content = f.read()
-                  # Extract warnings section
-                  if '============================== warnings summary ===============================' in content:
-                      warnings_section = content.split('============================== warnings summary ===============================')[1]
-                      if '-- Docs:' in warnings_section:
-                          warnings_section = warnings_section.split('-- Docs:')[0]
-                      
-                      # Parse warnings - format is file path followed by indented warning details
-                      lines = warnings_section.split('\\n')
-                      current_warning_group = []
-                      
-                      for line in lines:
-                          line = line.rstrip()
-                          if not line or line.startswith('='):
-                              continue
-                          
-                          # Check if this is a file path (starts at column 0, ends with .py: or contains warning count)
-                          if not line.startswith(' ') and ('.py:' in line or 'warnings' in line):
-                              # Save previous warning group if exists
-                              if current_warning_group:
-                                  warnings_list.append('\\n'.join(current_warning_group))
-                              # Start new warning group
-                              current_warning_group = [line]
-                          elif line.startswith(' ') and current_warning_group:
-                              # This is part of the current warning (indented line)
-                              current_warning_group.append(line)
-                      
-                      # Don't forget the last warning group
-                      if current_warning_group:
-                          warnings_list.append('\\n'.join(current_warning_group))
-              
-              print(f'Extracted {len(warnings_list)} warning groups from target test output')
-          except Exception as e:
-              print(f'Could not extract warnings: {e}')
-
-          # Save test lists to artifact files instead of job outputs
-          test_data = {
-              'passing_tests': passing_tests,
-              'failing_tests': failing_tests,
-              'skipped_tests': skipped_tests,
-              'xfailed_tests': xfailed_tests,
-              'all_tests': all_tests,
-              'warnings': warnings_list
-          }
-
-          with open('target_test_data.json', 'w') as f:
-              json.dump(test_data, f, indent=2)
-
-          print('Test data saved to target_test_data.json for artifact')
-          print('Results extraction completed')
-
-          # Set scalar outputs only (no large arrays)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'total={target_total}\\n')
-              f.write(f'passed={target_passed}\\n')
-              f.write(f'percentage={target_percentage:.2f}\\n')
-              f.write(f'passing_count={len(passing_tests)}\\n')
-          "
-
-          echo "Target branch test results processed: ${{ steps.extract-results.outputs.passed }}/${{ steps.extract-results.outputs.total }} tests passed (${{ steps.extract-results.outputs.percentage }}%)"
-
-      - name: Upload target branch artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
-          path: |
-            target_test_data.json
-            target_test_output.txt
-            target_results.json
-          retention-days: 3
-          if-no-files-found: ignore
-
-      # Add a step to set default outputs when collection errors are detected
-      - name: Set collection error outputs
-        id: set-error-outputs
-        if: steps.check-collection.outputs.has_collection_errors == 'true'
-        run: |
-          echo "::warning::Setting default outputs for target branch due to collection errors"
-          echo "total=0" >> $GITHUB_OUTPUT
-          echo "passed=0" >> $GITHUB_OUTPUT
-          echo "percentage=0.00" >> $GITHUB_OUTPUT
-          echo "passing_count=0" >> $GITHUB_OUTPUT
-
-  compare-results:
-    needs: [test-source-branch, test-target-branch]
-    uses: ./.github/workflows/regression-test.yml
-    with:
-      runs_on: ${{ inputs.runs_on }}
-      baseline_label: ${{ inputs.target_branch_to_compare }}
-      baseline_results_artifact: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
-      baseline_results_filename: target_test_data.json
-      current_label: ${{ github.head_ref || github.ref_name || 'source branch' }}
-      current_results_artifact: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
-      current_results_filename: pr_test_data.json
-      baseline_passed: ${{ needs.test-target-branch.outputs.passed }}
-      baseline_total: ${{ needs.test-target-branch.outputs.total }}
-      baseline_percentage: ${{ needs.test-target-branch.outputs.percentage }}
-      current_passed: ${{ needs.test-source-branch.outputs.passed }}
-      current_total: ${{ needs.test-source-branch.outputs.total }}
-      current_percentage: ${{ needs.test-source-branch.outputs.percentage }}
-      baseline_collection_errors: ${{ needs.test-target-branch.outputs.collection_errors }}
-      baseline_no_tests_found: ${{ needs.test-target-branch.outputs.no_tests_found }}
-      current_collection_errors: ${{ needs.test-source-branch.outputs.collection_errors }}
-      current_no_tests_found: ${{ needs.test-source-branch.outputs.no_tests_found }}
-      artifact_name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
-
-  perform-regression-analysis:
-    needs: [test-source-branch, test-target-branch]
-    uses: ./.github/workflows/meta-regression-analysis.yml
-    with:
-      item_type_singular: "test"
-      item_type_plural: "tests"
-      pr_number: ${{ github.event.pull_request.number }}
-      run_id: ${{ github.run_id }}
-      target_branch_artifact_name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
-      pr_branch_artifact_name: pr_branch_data_${{ github.event.pull_request.number || github.run_id }}
-
-  # Conditionally run notification job only if needed
-  prepare-notification:
-    name: Prepare Notification Data
-    needs:
-      [
-        test-source-branch,
-        test-target-branch,
-        compare-results,
-        perform-regression-analysis,
-      ]
-    # Notify on collection errors, no tests found, compare result failure, or if regressions are detected
-    if: |
-      always() &&
-      (
-        needs.test-source-branch.outputs.collection_errors == 'true' ||
-        needs.test-source-branch.outputs.no_tests_found == 'true' ||
-        needs.compare-results.result == 'failure' ||
-        needs.perform-regression-analysis.outputs.has_regressions == 'true'
-      )
-    runs-on: ${{ inputs.runs_on }}
-    outputs:
-      message_body: ${{ steps.construct_notification.outputs.message_body_out }}
-      ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}
-      artifact_path: ${{ steps.construct_notification.outputs.artifact_path_out }}
-      should_notify: "true"
-      webhook_available_for_alert: ${{ steps.check_webhook_availability.outputs.webhook_available }}
-
-    steps:
-      - name: Check for Discord Webhook URL
-        id: check_webhook_availability
-        run: |
-          if [ -z "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
-            echo "::notice::DISCORD_WEBHOOK_URL secret is not set. Discord notifications will likely be skipped by the alert workflow if it relies on this secret."
-            echo "webhook_available=false" >> $GITHUB_OUTPUT
-          else
-            echo "webhook_available=true" >> $GITHUB_OUTPUT
-          fi
-      - name: Download regression details (if any)
-        id: download_regressions
-        if: always()
-        uses: actions/download-artifact@v4
-        with:
-          name: regression_details_pr_${{ github.event.pull_request.number || github.run_id }}_tests
-          path: . # Download to current directory
-        continue-on-error: true
-
-      - name: Check downloaded regression file
-        if: always()
-        run: |
-          echo "Checking for regression details file..."
-          if [ -f "regression_details.txt" ]; then
-            echo "✅ Regression details file found"
-            echo "File size: $(wc -c < regression_details.txt) bytes"
-            echo "First few lines:"
-            head -5 regression_details.txt
-          else
-            echo "❌ Regression details file not found"
-          fi
-
-          if [ -f "comprehensive_regression_report.txt" ]; then
-            echo "✅ Comprehensive regression report found"
-            echo "File size: $(wc -c < comprehensive_regression_report.txt) bytes"
-          else
-            echo "❌ Comprehensive regression report not found"
-          fi
-
-      - name: Construct Discord Notification
-        id: construct_notification
-        env:
-          LINT_RESULT: ${{ needs.lint.result }}
-          SOURCE_TEST_RESULT: ${{ needs.test-source-branch.result }}
-          TARGET_TEST_RESULT: ${{ needs.test-target-branch.result }}
-          COMPARE_RESULT: ${{ needs.compare-results.result }}
-          PR_COLLECTION_ERRORS: ${{ needs.test-source-branch.outputs.collection_errors }}
-          PR_NO_TESTS_FOUND: ${{ needs.test-source-branch.outputs.no_tests_found }}
-          PR_ERROR_TYPE: ${{ needs.test-source-branch.outputs.error_type }}
-          PR_ERROR_DETAILS_TRUNCATED: ${{ needs.test-source-branch.outputs.error_details }}
-          HAS_REGRESSIONS: ${{ needs.perform-regression-analysis.outputs.has_regressions }}
-          REGRESSION_COUNT: ${{ needs.perform-regression-analysis.outputs.regression_count }}
-          PR_TOTAL_TESTS: ${{ needs.test-source-branch.outputs.total }}
-          PR_PASSED_TESTS: ${{ needs.test-source-branch.outputs.passed }}
-          PR_PERCENTAGE: ${{ needs.test-source-branch.outputs.percentage }}
-          TARGET_TOTAL_TESTS: ${{ needs.test-target-branch.outputs.total }}
-          TARGET_PASSED_TESTS: ${{ needs.test-target-branch.outputs.passed }}
-          TARGET_PERCENTAGE: ${{ needs.test-target-branch.outputs.percentage }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          TARGET_BRANCH_NAME: ${{ inputs.target_branch_to_compare }}
-          PR_BRANCH_NAME: ${{ github.head_ref }}
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-          ACTION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          GH_ASSIGNEES_JSON: ${{ toJson(github.event.pull_request.assignees) }}
-          USER_MAP_JSON: ${{ secrets.DISCORD_USER_MAP || '{}' }}
-          REGRESSION_FILE_PATH: "regression_details.txt"
-          DOWNLOAD_REGRESSIONS_OUTCOME: ${{ steps.download_regressions.outcome }}
-          INPUT_PING_LATEST_COMMITTER: ${{ inputs.ping_latest_committer }}
-        run: |
-          MESSAGE_LINES=() # Use an array to build message lines
-          PING_KEYS_OUTPUT="" # Will be comma-separated GitHub logins
-          ARTIFACT_PATH_OUTPUT=""
-
-          echo "Raw GH_ASSIGNEES_JSON value: [$GH_ASSIGNEES_JSON]"
-          echo "Raw USER_MAP_JSON value: [$USER_MAP_JSON]"
-
-          # 1. Determine Pings - Collect GitHub Logins to pass to alert-discord.yml
-          # Initialize PING_KEYS_OUTPUT
-          PING_KEYS_OUTPUT=""
-
-          # Add assignees to PING_KEYS_OUTPUT
-          if [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && command -v jq &> /dev/null; then
-            ASSIGNEE_LOGINS_ARRAY=($(echo "$GH_ASSIGNEES_JSON" | jq -r '.[].login // empty'))
-            echo "GH_ASSIGNEES_JSON received: $GH_ASSIGNEES_JSON"
-            echo "Extracted ASSIGNEE_LOGINS_ARRAY: (${ASSIGNEE_LOGINS_ARRAY[*]})"
-            echo "Count of assignees extracted: ${#ASSIGNEE_LOGINS_ARRAY[@]}"
-
-            MAPPED_ASSIGNEE_COUNT=0
-            TEMP_PING_KEYS=()
-
-            for assignee_login in "${ASSIGNEE_LOGINS_ARRAY[@]}"; do
-              if [ -z "$assignee_login" ]; then
-                echo "Skipping empty assignee login."
-                continue
-              fi
-              echo "Processing assignee for ping: '$assignee_login'"
-              # Check if this assignee_login exists as a key in USER_MAP_JSON
-              if echo "$USER_MAP_JSON" | jq -e --arg K "$assignee_login" '.[$K]' > /dev/null; then
-                echo "Assignee '$assignee_login' FOUND in USER_MAP_JSON."
-                TEMP_PING_KEYS+=("$assignee_login")
-                MAPPED_ASSIGNEE_COUNT=$((MAPPED_ASSIGNEE_COUNT + 1))
-              else
-                echo "Assignee '$assignee_login' NOT FOUND in USER_MAP_JSON."
-              fi
-            done
-
-            echo "Total assignees found in USER_MAP_JSON and added to pings: $MAPPED_ASSIGNEE_COUNT"
-
-            if [ ${#TEMP_PING_KEYS[@]} -gt 0 ]; then
-              PING_KEYS_OUTPUT=$(IFS=,; echo "${TEMP_PING_KEYS[*]}")
-              echo "Initial PING_KEYS_OUTPUT from assignees: [$PING_KEYS_OUTPUT]"
-            else
-              echo "No assignees found or GH_ASSIGNEES_JSON was empty, or no assignees were found in USER_MAP_JSON."
-            fi
-          elif [ -n "$USER_MAP_JSON" ] && [ "$USER_MAP_JSON" != "{}" ] && ! command -v jq &> /dev/null; then
-            echo "::warning::jq is not available. Cannot determine GitHub users (assignees) for pings."
-          else
-            echo "No user map JSON or jq not found. PING_KEYS_OUTPUT (from assignees) will be empty."
-          fi
-
-          # Add latest committer if INPUT_PING_LATEST_COMMITTER is true
-          if [[ "$INPUT_PING_LATEST_COMMITTER" == "true" ]]; then
-            echo "INPUT_PING_LATEST_COMMITTER is true. Attempting to fetch latest committer for PR #${PR_NUMBER}."
-            if command -v gh &> /dev/null && [ -n "$PR_NUMBER" ]; then
-              LATEST_COMMITTER_LOGIN_RAW=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[-1].author.login' 2>/dev/null || echo "")
-              
-              if [ -n "$LATEST_COMMITTER_LOGIN_RAW" ] && [ "$LATEST_COMMITTER_LOGIN_RAW" != "null" ]; then
-                # Apply bot filter (e.g., names ending in [bot] or -bot)
-                LATEST_COMMITTER_LOGIN=$(echo "$LATEST_COMMITTER_LOGIN_RAW" | grep -v -E -i '(\[bot\]$|-bot$)' || echo "")
-                
-                if [ -n "$LATEST_COMMITTER_LOGIN" ]; then
-                  echo "Latest committer identified: $LATEST_COMMITTER_LOGIN"
-                  
-                  # Check if this committer is already in PING_KEYS_OUTPUT
-                  ALREADY_IN_LIST=0
-                  if [ -n "$PING_KEYS_OUTPUT" ]; then # Only check if PING_KEYS_OUTPUT is not empty
-                    IFS=',' read -ra PING_ARRAY <<< "$PING_KEYS_OUTPUT"
-                    for key in "${PING_ARRAY[@]}"; do
-                      if [[ "$key" == "$LATEST_COMMITTER_LOGIN" ]]; then
-                        ALREADY_IN_LIST=1
-                        break
-                      fi
-                    done
-                  fi
-                  
-                  if [[ "$ALREADY_IN_LIST" -eq 0 ]]; then
-                    if [ -z "$PING_KEYS_OUTPUT" ]; then
-                      PING_KEYS_OUTPUT="$LATEST_COMMITTER_LOGIN"
-                    else
-                      PING_KEYS_OUTPUT="$PING_KEYS_OUTPUT,$LATEST_COMMITTER_LOGIN"
-                    fi
-                    echo "Added latest committer '$LATEST_COMMITTER_LOGIN' to PING_KEYS_OUTPUT. New list: [$PING_KEYS_OUTPUT]"
-                  else
-                    echo "Latest committer '$LATEST_COMMITTER_LOGIN' is already in PING_KEYS_OUTPUT (likely an assignee)."
-                  fi
-                else
-                  echo "Latest committer login '$LATEST_COMMITTER_LOGIN_RAW' was filtered out (likely a bot or pattern match) or empty after filter."
-                fi
-              else
-                echo "No latest committer login found for PR #$PR_NUMBER from gh command, or login was null."
-              fi
-            else
-              if ! command -v gh &> /dev/null; then
-                echo "::warning::gh command not available. Cannot fetch latest committer."
-              fi
-              if [ -z "$PR_NUMBER" ]; then
-                echo "::warning::PR_NUMBER is not set (event might not be a pull_request). Cannot fetch latest committer."
-              fi
-            fi
-          fi
-
-          # Make this a standard echo for better visibility of the final list
-          echo "Final Ping Keys Output (GitHub Logins from test-pytest.yml): [$PING_KEYS_OUTPUT]"
-          echo "ping_user_ids_out=$PING_KEYS_OUTPUT" >> $GITHUB_OUTPUT
-
-          # Store branch names in variables with proper quoting
-          PR_BRANCH="${PR_BRANCH_NAME:-unknown}"
-          TARGET_BRANCH="${TARGET_BRANCH_NAME:-unknown}"
-
-          # 2. Construct Message Body
-          MESSAGE_LINES+=("**Pytest Comparison & Regression Analysis for PR [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})**")
-          MESSAGE_LINES+=("Branch: [\`${PR_BRANCH}\`](${REPO_URL}/tree/${PR_BRANCH}) against [\`${TARGET_BRANCH}\`](${REPO_URL}/tree/${TARGET_BRANCH})")
-          MESSAGE_LINES+=("---")
-
-          # Job Status Summary
-          MESSAGE_LINES+=("**Job Status:**")
-          LINT_STATUS="Success"
-          if [[ "$LINT_RESULT" == "failure" ]]; then LINT_STATUS="Failed"; elif [[ "$LINT_RESULT" == "skipped" ]]; then LINT_STATUS="Skipped"; fi
-          MESSAGE_LINES+=("- Linting: $LINT_STATUS")
-
-          SOURCE_TEST_STATUS="Success"
-          if [[ "$SOURCE_TEST_RESULT" == "failure" ]]; then SOURCE_TEST_STATUS="Failed"; elif [[ "$SOURCE_TEST_RESULT" == "skipped" ]]; then SOURCE_TEST_STATUS="Skipped"; fi
-          MESSAGE_LINES+=("- PR Branch Tests (\`${PR_BRANCH}\`): $SOURCE_TEST_STATUS")
-
-          TARGET_TEST_STATUS="Success"
-          if [[ "$TARGET_TEST_RESULT" == "failure" ]]; then TARGET_TEST_STATUS="Failed"; elif [[ "$TARGET_TEST_RESULT" == "skipped" ]]; then TARGET_TEST_STATUS="Skipped"; fi
-          MESSAGE_LINES+=("- Target Branch Tests (\`${TARGET_BRANCH}\`): $TARGET_TEST_STATUS")
-
-          COMPARE_STATUS="Success"
-          if [[ "$COMPARE_RESULT" == "failure" ]]; then COMPARE_STATUS="Failed"; elif [[ "$COMPARE_RESULT" == "skipped" ]]; then COMPARE_STATUS="Skipped"; fi
-          MESSAGE_LINES+=("- Comparison & Regression: $COMPARE_STATUS")
-          MESSAGE_LINES+=("---")
-
-          # Test Discovery Issues in PR Branch
-          if [[ "$PR_COLLECTION_ERRORS" == "true" ]]; then
-            MESSAGE_LINES+=("**:red_circle: ERROR: Test Discovery Failed in PR Branch (\`${PR_BRANCH}\`)**")
-            MESSAGE_LINES+=("  - Type: \`${PR_ERROR_TYPE}\`")
-            MESSAGE_LINES+=("  - This usually indicates import errors or syntax issues preventing tests from being collected.")
-            MESSAGE_LINES+=("  - See attached file for detailed error information.")
-          elif [[ "$PR_NO_TESTS_FOUND" == "true" ]]; then
-            MESSAGE_LINES+=("**:warning: WARNING: No Tests Found in PR Branch (\`${PR_BRANCH}\`)**")
-            MESSAGE_LINES+=("  - Pytest did not discover any test files matching its patterns.")
-            MESSAGE_LINES+=("  - Ensure your test files are correctly named (e.g., \`test_*.py\` or \`*_test.py\`) and located.")
-          fi
-
-          # Regression Analysis Summary
-          if [[ "$HAS_REGRESSIONS" == "true" ]]; then
-            MESSAGE_LINES+=("**:red_circle: REGRESSIONS DETECTED**")
-            
-            # Check if we have comprehensive regression file with categories
-            if [ -f "comprehensive_regression_report.txt" ]; then
-              # Extract counts from comprehensive report
-              PASS_FAIL_COUNT=$(grep -o "PASS-TO-FAIL REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              PASS_SKIP_COUNT=$(grep -o "PASS-TO-SKIP REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              FAIL_SKIP_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-SKIP IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              FAIL_PASS_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-PASS IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              PASS_GONE_COUNT=$(grep -o "PASS-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              FAIL_GONE_COUNT=$(grep -o "FAIL-TO-GONE REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              DISCOVERY_COUNT=$(grep -o "DISCOVERY REGRESSIONS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              NEW_TESTS_COUNT=$(grep -o "NEW TESTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-              
-                             # Add category summaries (≤5 show paths, >5 show count + refer to file)
-               if [[ "$PASS_FAIL_COUNT" -gt 0 ]]; then
-                 if [[ "$PASS_FAIL_COUNT" -le 5 ]]; then
-                   MESSAGE_LINES+=("**Pass→Fail ($PASS_FAIL_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "PASS-TO-FAIL REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_FAIL_COUNT | sed 's/^  [0-9]\+\. //')
-                   for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("• \`$test_path\`")
-                   done
-                 else
-                   MESSAGE_LINES+=("**Pass→Fail:** $PASS_FAIL_COUNT tests (see attached file)")
-                 fi
-               fi
-               
-               if [[ "$PASS_SKIP_COUNT" -gt 0 ]]; then
-                 if [[ "$PASS_SKIP_COUNT" -le 5 ]]; then
-                   MESSAGE_LINES+=("**Pass→Skip ($PASS_SKIP_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "PASS-TO-SKIP REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_SKIP_COUNT | sed 's/^  [0-9]\+\. //')
-                   for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("• \`$test_path\`")
-                   done
-                 else
-                   MESSAGE_LINES+=("**Pass→Skip:** $PASS_SKIP_COUNT tests (see attached file)")
-                 fi
-               fi
-               
-              if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
-                if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -le 5 ]]; then
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements ($FAIL_SKIP_IMPROVEMENTS_COUNT):**")
-                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
-                  for test_path in "${test_paths[@]}"; do
-                    MESSAGE_LINES+=("• \`$test_path\`")
-                  done
-                else
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements:** $FAIL_SKIP_IMPROVEMENTS_COUNT tests (see attached file)")
-                fi
-              fi
-
-              if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -gt 0 ]]; then
-                if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -le 5 ]]; then
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements ($FAIL_PASS_IMPROVEMENTS_COUNT):**")
-                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-PASS IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_PASS_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
-                  for test_path in "${test_paths[@]}"; do
-                    MESSAGE_LINES+=("• \`$test_path\`")
-                  done
-                else
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements:** $FAIL_PASS_IMPROVEMENTS_COUNT tests (see attached file)")
-                fi
-              fi
-               
-               if [[ "$PASS_GONE_COUNT" -gt 0 ]]; then
-                 if [[ "$PASS_GONE_COUNT" -le 5 ]]; then
-                   MESSAGE_LINES+=("**Pass→Gone ($PASS_GONE_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "PASS-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$PASS_GONE_COUNT | sed 's/^  [0-9]\+\. //')
-                   for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("• \`$test_path\`")
-                   done
-                 else
-                   MESSAGE_LINES+=("**Pass→Gone:** $PASS_GONE_COUNT tests (see attached file)")
-                 fi
-               fi
-               
-               if [[ "$FAIL_GONE_COUNT" -gt 0 ]]; then
-                 if [[ "$FAIL_GONE_COUNT" -le 5 ]]; then
-                   MESSAGE_LINES+=("**Fail→Gone ($FAIL_GONE_COUNT):**")
-                   readarray -t test_paths < <(grep -A 100 "FAIL-TO-GONE REGRESSIONS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_GONE_COUNT | sed 's/^  [0-9]\+\. //')
-                   for test_path in "${test_paths[@]}"; do
-                     MESSAGE_LINES+=("• \`$test_path\`")
-                   done
-                 else
-                   MESSAGE_LINES+=("**Fail→Gone:** $FAIL_GONE_COUNT tests (see attached file)")
-                 fi
-               fi
-              
-              if [[ "$DISCOVERY_COUNT" -gt 0 ]]; then
-                if [[ "$DISCOVERY_COUNT" -le 5 ]]; then
-                  MESSAGE_LINES+=("**Discovery Warnings ($DISCOVERY_COUNT):**")
-                  MESSAGE_LINES+=("• $DISCOVERY_COUNT new warnings (see attached file)")
-                else
-                  MESSAGE_LINES+=("**Discovery Warnings:** $DISCOVERY_COUNT warnings (see attached file)")
-                fi
-              fi
-
-              if [[ "$NEW_TESTS_COUNT" -gt 0 ]]; then
-                if [[ "$NEW_TESTS_COUNT" -le 5 ]]; then
-                  MESSAGE_LINES+=(":sparkles: **New Tests ($NEW_TESTS_COUNT):**")
-                  readarray -t test_paths < <(grep -A 100 "NEW TESTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$NEW_TESTS_COUNT | sed 's/^  [0-9]\+\. //')
-                  for test_path in "${test_paths[@]}"; do
-                    MESSAGE_LINES+=("• \`$test_path\`")
-                  done
-                else
-                  MESSAGE_LINES+=(":sparkles: **New Tests:** $NEW_TESTS_COUNT tests (see attached file)")
-                fi
-              fi
-              
-            else
-              # Fallback to simple regression count
-              MESSAGE_LINES+=("  - **${REGRESSION_COUNT} test(s)** that were passing in \`${TARGET_BRANCH}\` are now **failing** in \`${PR_BRANCH}\`.")
-            fi
-          elif [[ "$COMPARE_RESULT" == "failure" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
-            # This case handles general comparison failures NOT due to specific regressions
-            MESSAGE_LINES+=("**:warning: TEST RESULTS DECLINED**")
-            MESSAGE_LINES+=("  - The PR branch shows a decrease in test success compared to the target branch, but no specific regressions were identified by the \`meta-regression-analysis\` job.")
-            MESSAGE_LINES+=("  - PR Branch (\`${PR_BRANCH}\`): **${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} passed (${PR_PERCENTAGE}%)**")
-            MESSAGE_LINES+=("  - Target Branch (\`${TARGET_BRANCH}\`): **${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} passed (${TARGET_PERCENTAGE}%)**")
-          elif [[ "$COMPARE_RESULT" == "success" ]] && [[ "$HAS_REGRESSIONS" != "true" ]]; then
-             MESSAGE_LINES+=("**:white_check_mark: NO REGRESSIONS DETECTED**")
-             MESSAGE_LINES+=("  - PR Branch (\`${PR_BRANCH}\`): **${PR_PASSED_TESTS}/${PR_TOTAL_TESTS} passed (${PR_PERCENTAGE}%)**")
-             MESSAGE_LINES+=("  - Target Branch (\`${TARGET_BRANCH}\`): **${TARGET_PASSED_TESTS}/${TARGET_TOTAL_TESTS} passed (${TARGET_PERCENTAGE}%)**")
-          fi
-
-          if [[ "$HAS_REGRESSIONS" != "true" ]] && [ -f "comprehensive_regression_report.txt" ]; then
-            FAIL_SKIP_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-SKIP IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-            FAIL_PASS_IMPROVEMENTS_COUNT=$(grep -o "FAIL-TO-PASS IMPROVEMENTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-            NEW_TESTS_COUNT=$(grep -o "NEW TESTS (\([0-9]*\)" comprehensive_regression_report.txt | grep -o "[0-9]*" || echo "0")
-
-            if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 || "$FAIL_PASS_IMPROVEMENTS_COUNT" -gt 0 || "$NEW_TESTS_COUNT" -gt 0 ]]; then
-              MESSAGE_LINES+=("**:sparkles: Improvements & Additions**")
-
-              if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -gt 0 ]]; then
-                if [[ "$FAIL_SKIP_IMPROVEMENTS_COUNT" -le 5 ]]; then
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements ($FAIL_SKIP_IMPROVEMENTS_COUNT):**")
-                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-SKIP IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_SKIP_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
-                  for test_path in "${test_paths[@]}"; do
-                    MESSAGE_LINES+=("• \`$test_path\`")
-                  done
-                else
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Skip Improvements:** $FAIL_SKIP_IMPROVEMENTS_COUNT tests (see attached file)")
-                fi
-              fi
-
-              if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -gt 0 ]]; then
-                if [[ "$FAIL_PASS_IMPROVEMENTS_COUNT" -le 5 ]]; then
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements ($FAIL_PASS_IMPROVEMENTS_COUNT):**")
-                  readarray -t test_paths < <(grep -A 100 "FAIL-TO-PASS IMPROVEMENTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$FAIL_PASS_IMPROVEMENTS_COUNT | sed 's/^  [0-9]\+\. //')
-                  for test_path in "${test_paths[@]}"; do
-                    MESSAGE_LINES+=("• \`$test_path\`")
-                  done
-                else
-                  MESSAGE_LINES+=(":white_check_mark: **Fail→Pass Improvements:** $FAIL_PASS_IMPROVEMENTS_COUNT tests (see attached file)")
-                fi
-              fi
-
-              if [[ "$NEW_TESTS_COUNT" -gt 0 ]]; then
-                if [[ "$NEW_TESTS_COUNT" -le 5 ]]; then
-                  MESSAGE_LINES+=(":sparkles: **New Tests ($NEW_TESTS_COUNT):**")
-                  readarray -t test_paths < <(grep -A 100 "NEW TESTS" comprehensive_regression_report.txt | grep "^  [0-9]\+\." | head -$NEW_TESTS_COUNT | sed 's/^  [0-9]\+\. //')
-                  for test_path in "${test_paths[@]}"; do
-                    MESSAGE_LINES+=("• \`$test_path\`")
-                  done
-                else
-                  MESSAGE_LINES+=(":sparkles: **New Tests:** $NEW_TESTS_COUNT tests (see attached file)")
-                fi
-              fi
-            fi
-          fi
-
-          MESSAGE_LINES+=("---")
-          MESSAGE_LINES+=("[View Workflow Run](${ACTION_RUN_URL})")
-
-          # Set artifact path - always prefer comprehensive report if it exists
-          if [ -f "comprehensive_regression_report.txt" ]; then
-            ARTIFACT_PATH_OUTPUT="comprehensive_regression_report.txt"
-          elif [ -f "$REGRESSION_FILE_PATH" ] && [[ "$DOWNLOAD_REGRESSIONS_OUTCOME" == "success" ]]; then
-            ARTIFACT_PATH_OUTPUT="$REGRESSION_FILE_PATH"
-          else
-            ARTIFACT_PATH_OUTPUT=""
-          fi
-
-          # Construct with actual newlines
-          FINAL_MESSAGE_BODY=$(printf "%s\\n" "${MESSAGE_LINES[@]}")
-          if [ ${#MESSAGE_LINES[@]} -gt 0 ]; then
-            # Remove the very last actual newline
-            FINAL_MESSAGE_BODY="${FINAL_MESSAGE_BODY%\\n}"
-          fi
-
-          echo "Final message body prepared in test-pytest.yml"
-
-          echo "message_body_out<<EOF" >> $GITHUB_OUTPUT
-          echo "$FINAL_MESSAGE_BODY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-          echo "artifact_path_out=$ARTIFACT_PATH_OUTPUT" >> $GITHUB_OUTPUT
-
-  notify-discord:
-    name: Send Discord Notification
-    needs: [prepare-notification]
-    if: |
-      always() &&
-      needs.prepare-notification.outputs.should_notify == 'true' &&
-      needs.prepare-notification.outputs.webhook_available_for_alert == 'true'
-    uses: ./.github/workflows/alert-discord.yml
-    with:
-      message_body: ${{ needs.prepare-notification.outputs.message_body }}
-      ping_user_ids: ${{ needs.prepare-notification.outputs.ping_user_ids }}
-      artifact_paths: ${{ needs.prepare-notification.outputs.artifact_path }}
-      should_notify: ${{ needs.prepare-notification.outputs.should_notify }}
-      runs_on: ${{ inputs.runs_on }}
-    secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      DISCORD_USER_MAP: ${{ secrets.DISCORD_USER_MAP }}
