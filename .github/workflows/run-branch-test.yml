@@ -70,6 +70,8 @@ jobs:
 
   # Test target branch with smart caching
   # Cache check happens AFTER waiting in concurrency queue
+  # - PRs to main: will find cache from cache-main-tests.yml (or wait for it)
+  # - PRs to other branches: cache miss, runs tests normally (not an error)
   test-target:
     needs: detect-frameworks
     if: needs.detect-frameworks.outputs.has_pytest == 'true'
@@ -93,9 +95,10 @@ jobs:
 
     steps:
       # Check cache AFTER waiting in concurrency queue
+      # Use restore (not combined cache action) to control save timing
       - name: Check cache for target results
         id: cache-check
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: cached_target
           key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
@@ -353,6 +356,19 @@ jobs:
           EOF
           # Remove leading whitespace from the env file
           sed -i 's/^[[:space:]]*//' cached_target/outputs.env
+
+      # Explicitly save cache (not relying on post-hook) so waiting jobs find it
+      - name: Upload to cache
+        if: steps.cache-check.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            test_data.json
+            test_output.txt
+            results.json
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Upload test artifacts
         if: steps.cache-check.outputs.cache-hit != 'true'
