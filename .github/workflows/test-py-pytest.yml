@@ -144,6 +144,8 @@ jobs:
           fi
 
       - name: Run tests
+        id: run-tests
+        continue-on-error: true
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
           echo "Running tests with ${{ inputs.parallel_workers }} workers..."
@@ -151,12 +153,25 @@ jobs:
           if [ "${{ inputs.parallel_workers }}" != "1" ]; then
             PARALLEL_FLAG="-n ${{ inputs.parallel_workers }}"
           fi
-          # Use tee to show output in real-time while capturing to file
-          python -m pytest -vv $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=short 2>&1 | tee test_output.txt || true
+
+          # Run pytest and capture exit code
+          # Use quiet mode for console (-q) - full details in JSON report
+          set +e
+          python -m pytest -q $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=line 2>&1 | tee test_output.txt
+          PYTEST_EXIT=$?
+          set -e
+
+          echo "pytest_exit_code=$PYTEST_EXIT" >> $GITHUB_OUTPUT
+
+          if [ $PYTEST_EXIT -eq 137 ]; then
+            echo "::warning::Tests were killed (exit 137) - likely OOM. Partial results may be available."
+          fi
+
           if [ -f results.json ]; then
-            echo "✅ Test execution completed"
+            echo "✅ Test execution completed (exit code: $PYTEST_EXIT)"
           else
-            echo "❌ Test execution failed"
+            echo "❌ No results.json - creating empty results file"
+            echo '{"exitcode": '$PYTEST_EXIT', "summary": {"total": 0, "passed": 0}, "tests": []}' > results.json
           fi
 
       - name: Extract test results
