@@ -1,7 +1,11 @@
-name: Cache Target Branch Tests
+name: Cache Main Branch Tests
 
-# Runs on push to main/master to pre-populate cache for PRs
-# Uses same concurrency group as PR test-target job, so PRs wait for this
+# Runs on push to main/master to pre-populate pytest cache for PRs
+# Uses same concurrency group as PR test-target job, so PRs targeting
+# this SHA will wait for tests to complete, then use cached results
+#
+# PRs targeting other branches (not main/master) won't find a cache
+# and will run their own target branch tests - this is expected behavior
 
 on:
   push:
