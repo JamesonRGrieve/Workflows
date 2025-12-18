@@ -597,17 +597,17 @@ jobs:
                   f.write(f"\n... and {len(tests) - max_show} more (see artifacts for full list)\n")
               f.write("```\n</details>\n")
 
-          def write_summary_section(f, title: str, tests: List[str], max_show: int = 20) -> None:
-              """Write a collapsible section with test names to the summary."""
-              if not tests:
-                  return
-              f.write(f"\n<details>\n<summary><strong>{title}</strong> ({len(tests)} tests)</summary>\n\n")
-              f.write("```\n")
-              for test in tests[:max_show]:
-                  f.write(f"{test}\n")
-              if len(tests) > max_show:
-                  f.write(f"\n... and {len(tests) - max_show} more (see artifacts for full list)\n")
-              f.write("```\n</details>\n")
+          # Build summary variables from transitions dict
+          summary_lines = build_matrix_table()
+          pass_to_skip_list = transitions[("Pass", "Skip")] + transitions[("Pass", "XFail")]
+          pass_to_gone = transitions[("Pass", "Nonexistent")]
+          fail_to_gone = transitions[("Fail", "Nonexistent")]
+          fail_to_skip = transitions[("Fail", "Skip")]
+          fail_to_pass = transitions[("Fail", "Pass")]
+          new_tests = []
+          for to_state in STATES:
+              if to_state != "Nonexistent":
+                  new_tests.extend(transitions[("Nonexistent", to_state)])
 
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
@@ -619,21 +619,21 @@ jobs:
 
                   # Write detailed test lists
                   write_summary_section(summary_file, "❌ Pass → Fail", pass_to_fail)
-                  write_summary_section(summary_file, "⚠️ Pass → Skip/XFail", pass_to_skip)
+                  write_summary_section(summary_file, "⚠️ Pass → Skip/XFail", pass_to_skip_list)
                   write_summary_section(summary_file, "🔴 Pass → Gone", pass_to_gone)
                   write_summary_section(summary_file, "🟡 Fail → Gone", fail_to_gone)
                   write_summary_section(summary_file, "✅ Fail → Pass (Improvement)", fail_to_pass)
                   write_summary_section(summary_file, "⏭️ Fail → Skip (Improvement)", fail_to_skip)
                   write_summary_section(summary_file, "🆕 New Tests", new_tests)
 
-                  if discovery_regressions:
-                      summary_file.write(f"\n<details>\n<summary><strong>⚠️ Discovery Warnings</strong> ({len(discovery_regressions)} new)</summary>\n\n")
+                  if discovery_warnings:
+                      summary_file.write(f"\n<details>\n<summary><strong>⚠️ Discovery Warnings</strong> ({len(discovery_warnings)} new)</summary>\n\n")
                       summary_file.write("```\n")
-                      for warning in discovery_regressions[:10]:
+                      for warning in discovery_warnings[:10]:
                           truncated = (warning[:300] + "...") if len(warning) > 300 else warning
                           summary_file.write(f"{truncated}\n\n")
-                      if len(discovery_regressions) > 10:
-                          summary_file.write(f"... and {len(discovery_regressions) - 10} more\n")
+                      if len(discovery_warnings) > 10:
+                          summary_file.write(f"... and {len(discovery_warnings) - 10} more\n")
                       summary_file.write("```\n</details>\n")
 
           if has_regressions:
