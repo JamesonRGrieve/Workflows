@@ -597,83 +597,44 @@ jobs:
                   f.write(f"\n... and {len(tests) - max_show} more (see artifacts for full list)\n")
               f.write("```\n</details>\n")
 
+          def write_summary_section(f, title: str, tests: List[str], max_show: int = 20) -> None:
+              """Write a collapsible section with test names to the summary."""
+              if not tests:
+                  return
+              f.write(f"\n<details>\n<summary><strong>{title}</strong> ({len(tests)} tests)</summary>\n\n")
+              f.write("```\n")
+              for test in tests[:max_show]:
+                  f.write(f"{test}\n")
+              if len(tests) > max_show:
+                  f.write(f"\n... and {len(tests) - max_show} more (see artifacts for full list)\n")
+              f.write("```\n</details>\n")
+
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
               with Path(summary_path).open("a", encoding="utf-8") as summary_file:
-                  summary_file.write("### Regression Matrix\n\n")
-                  summary_file.write("**Bold** = regression, *Italic* = improvement, `-` = no change\n\n")
-                  summary_file.write("\n".join(build_matrix_table()) + "\n")
+                  summary_file.write("### Regression Breakdown\n\n")
+                  summary_file.write("\n".join(summary_lines) + "\n")
+                  if fail_to_skip or fail_to_pass:
+                      summary_file.write("\n_Improvements are highlighted for visibility and do not fail the job._\n")
 
-                  # Discovery warnings section (between matrix and details)
-                  if discovery_warnings:
-                      summary_file.write(f"\n### New Discovery Warnings ({len(discovery_warnings)})\n\n")
-                      summary_file.write("<details>\n<summary>View warnings</summary>\n\n")
+                  # Write detailed test lists
+                  write_summary_section(summary_file, "❌ Pass → Fail", pass_to_fail)
+                  write_summary_section(summary_file, "⚠️ Pass → Skip/XFail", pass_to_skip)
+                  write_summary_section(summary_file, "🔴 Pass → Gone", pass_to_gone)
+                  write_summary_section(summary_file, "🟡 Fail → Gone", fail_to_gone)
+                  write_summary_section(summary_file, "✅ Fail → Pass (Improvement)", fail_to_pass)
+                  write_summary_section(summary_file, "⏭️ Fail → Skip (Improvement)", fail_to_skip)
+                  write_summary_section(summary_file, "🆕 New Tests", new_tests)
+
+                  if discovery_regressions:
+                      summary_file.write(f"\n<details>\n<summary><strong>⚠️ Discovery Warnings</strong> ({len(discovery_regressions)} new)</summary>\n\n")
                       summary_file.write("```\n")
-                      for warning in discovery_warnings[:10]:
+                      for warning in discovery_regressions[:10]:
                           truncated = (warning[:300] + "...") if len(warning) > 300 else warning
                           summary_file.write(f"{truncated}\n\n")
-                      if len(discovery_warnings) > 10:
-                          summary_file.write(f"... and {len(discovery_warnings) - 10} more\n")
+                      if len(discovery_regressions) > 10:
+                          summary_file.write(f"... and {len(discovery_regressions) - 10} more\n")
                       summary_file.write("```\n</details>\n")
-
-                  # Collapsible detail sections
-                  summary_file.write("\n### Test Details\n")
-
-                  # Regressions first
-                  for from_state in STATES:
-                      for to_state in STATES:
-                          tests = transitions[(from_state, to_state)]
-                          classification = classify_transition(from_state, to_state)
-                          if tests and classification == "regression":
-                              write_summary_section(
-                                  summary_file,
-                                  f"❌ {from_state} → {to_state}",
-                                  tests
-                              )
-
-                  # Improvements
-                  for from_state in STATES:
-                      for to_state in STATES:
-                          tests = transitions[(from_state, to_state)]
-                          classification = classify_transition(from_state, to_state)
-                          if tests and classification == "improvement":
-                              write_summary_section(
-                                  summary_file,
-                                  f"✅ {from_state} → {to_state}",
-                                  tests
-                              )
-
-                  # Neutrals (excluding diagonal and new tests)
-                  for from_state in STATES:
-                      for to_state in STATES:
-                          tests = transitions[(from_state, to_state)]
-                          classification = classify_transition(from_state, to_state)
-                          if tests and classification == "neutral":
-                              write_summary_section(
-                                  summary_file,
-                                  f"➡️ {from_state} → {to_state}",
-                                  tests
-                              )
-
-                  # New tests
-                  for to_state in STATES:
-                      if to_state == "Nonexistent":
-                          continue
-                      tests = transitions[("Nonexistent", to_state)]
-                      if tests:
-                          write_summary_section(
-                              summary_file,
-                              f"🆕 New {to_state}",
-                              tests
-                          )
-
-          # Console output
-          print("📊 Regression Matrix:")
-          for line in build_matrix_table():
-              print(f"  {line}")
-
-          if discovery_warnings:
-              print(f"\n⚠️ New Discovery Warnings: {len(discovery_warnings)}")
 
           if has_regressions:
               print(f"\n❌ Total regressions detected: {regression_count}")

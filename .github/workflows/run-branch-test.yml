@@ -69,18 +69,12 @@ jobs:
       parallel_workers: ${{ inputs.parallel_workers }}
 
   # Test target branch with smart caching
-  # Cache check happens AFTER waiting in concurrency queue
-  # - PRs to main: will find cache from cache-main-tests.yml (or wait for it)
-  # - PRs to other branches: cache miss, runs tests normally (not an error)
+  # Cache is shared across PRs targeting same branch+SHA
+  # First PR to run populates cache, subsequent PRs use it if available
   test-target:
     needs: detect-frameworks
     if: needs.detect-frameworks.outputs.has_pytest == 'true'
     runs-on: ${{ inputs.runs_on }}
-    # Queue concurrent jobs testing same target+SHA
-    # Jobs wait here BEFORE checking cache, so second job finds cache from first
-    concurrency:
-      group: pytest-target-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
-      cancel-in-progress: false
     outputs:
       total: ${{ steps.results.outputs.total }}
       passed: ${{ steps.results.outputs.passed }}
@@ -94,48 +88,158 @@ jobs:
       xfailed_count: ${{ steps.results.outputs.xfailed_count }}
 
     steps:
-      # Check cache AFTER waiting in concurrency queue
-      # Use restore (not combined cache action) to control save timing
-      - name: Check cache for target results
-        id: cache-check
+      # Define cache keys
+      - name: Set cache keys
+        id: cache-keys
+        run: |
+          BASE_KEY="pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}"
+          echo "base_key=$BASE_KEY" >> $GITHUB_OUTPUT
+          echo "pending_key=${BASE_KEY}-pending-${{ github.run_id }}" >> $GITHUB_OUTPUT
+          echo "🔍 Cache base key: $BASE_KEY"
+
+      # Try to restore complete results first
+      - name: Check for complete cache
+        id: cache-complete
         uses: actions/cache/restore@v4
         with:
           path: cached_target
-          key: pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
+      # If no complete cache, check for any pending cache (someone else is running)
+      - name: Check for pending cache
+        id: cache-pending
+        if: steps.cache-complete.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_pending
+          key: ${{ steps.cache-keys.outputs.base_key }}-pending-impossible-match
+          restore-keys: |
+            ${{ steps.cache-keys.outputs.base_key }}-pending-
+
+      - name: Determine initial status
+        id: initial-status
+        run: |
+          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+            echo "status=complete" >> $GITHUB_OUTPUT
+            echo "✅ Found complete cache - will use it"
+          elif [ "${{ steps.cache-pending.outputs.cache-hit }}" == "true" ]; then
+            echo "status=pending" >> $GITHUB_OUTPUT
+            echo "⏳ Found pending cache - another job is running, will poll"
+          else
+            echo "status=miss" >> $GITHUB_OUTPUT
+            echo "📭 No cache found - will run tests"
+          fi
+
+      # If cache miss, immediately save a pending marker so others know to wait
+      - name: Create pending marker
+        if: steps.initial-status.outputs.status == 'miss'
+        run: |
+          mkdir -p cached_pending_marker
+          echo "pending" > cached_pending_marker/status
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> cached_pending_marker/status
+          echo "run_id=${{ github.run_id }}" >> cached_pending_marker/status
+
+      - name: Save pending marker
+        if: steps.initial-status.outputs.status == 'miss'
+        uses: actions/cache/save@v4
+        with:
+          path: cached_pending_marker
+          key: ${{ steps.cache-keys.outputs.pending_key }}
+
+      # If pending found, poll for complete cache with exponential backoff
+      - name: Poll for complete cache
+        id: poll-cache
+        if: steps.initial-status.outputs.status == 'pending'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "⏳ Another job is running tests, polling for results..."
+          TOTAL_WAIT=0
+          MAX_WAIT=1200  # 20 minutes
+          DELAY=5
+          CACHE_KEY="${{ steps.cache-keys.outputs.base_key }}"
+
+          while [ $TOTAL_WAIT -lt $MAX_WAIT ]; do
+            echo "⏳ Waiting ${DELAY}s... (${TOTAL_WAIT}s / ${MAX_WAIT}s elapsed)"
+            sleep $DELAY
+            TOTAL_WAIT=$((TOTAL_WAIT + DELAY))
+
+            # Check if complete cache exists now using GitHub API
+            CACHE_CHECK=$(gh cache list --key "$CACHE_KEY" --limit 1 2>/dev/null || echo "")
+            if echo "$CACHE_CHECK" | grep -q "$CACHE_KEY"; then
+              echo "✅ Complete cache is now available!"
+              echo "found=true" >> $GITHUB_OUTPUT
+              break
+            fi
+
+            # Exponential backoff: 5, 10, 20, 40, 60, 60...
+            DELAY=$((DELAY * 2))
+            if [ $DELAY -gt 60 ]; then
+              DELAY=60
+            fi
+          done
+
+          if [ $TOTAL_WAIT -ge $MAX_WAIT ]; then
+            echo "⏰ Timeout after ${MAX_WAIT}s - will run tests ourselves"
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Restore complete cache after polling found it
+      - name: Restore cache after poll
+        id: cache-after-poll
+        if: steps.poll-cache.outputs.found == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
+      - name: Determine final status
+        id: final-status
+        run: |
+          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+            echo "cache_hit=true" >> $GITHUB_OUTPUT
+            echo "✅ Using complete cache (found immediately)"
+          elif [ "${{ steps.cache-after-poll.outputs.cache-hit }}" == "true" ]; then
+            echo "cache_hit=true" >> $GITHUB_OUTPUT
+            echo "✅ Using complete cache (found after polling)"
+          else
+            echo "cache_hit=false" >> $GITHUB_OUTPUT
+            echo "🧪 Will run tests"
+          fi
 
       - name: Load cached results
         id: load-cache
-        if: steps.cache-check.outputs.cache-hit == 'true'
+        if: steps.final-status.outputs.cache_hit == 'true'
         run: |
-          echo "✅ Cache hit! Loading cached target results (skipping test run)"
+          echo "✅ Loading cached target results (skipping test run)"
           if [ -f cached_target/outputs.env ]; then
             cat cached_target/outputs.env >> $GITHUB_OUTPUT
           fi
 
       - name: Upload cached artifact
-        if: steps.cache-check.outputs.cache-hit == 'true'
+        if: steps.final-status.outputs.cache_hit == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
           path: cached_target/test_data.json
           if-no-files-found: ignore
 
-      # === Only run tests if cache miss ===
+      # === Only run tests if no usable cache ===
       - name: Checkout
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         uses: actions/checkout@v4.2.2
         with:
           submodules: "recursive"
           ref: ${{ inputs.target_branch }}
 
       - name: Set up Python
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         uses: actions/setup-python@v5.3.0
         with:
           python-version: "${{ inputs.python-version }}"
 
       - name: Install dependencies
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: |
           echo "📦 Installing dependencies..."
           python -m pip install --upgrade pip
@@ -149,7 +253,7 @@ jobs:
 
       - name: Check for test collection errors
         id: check-collection
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: |
           echo "🔍 Running pytest collection check..."
           python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
@@ -198,7 +302,7 @@ jobs:
         id: run-tests
         continue-on-error: true
         if: |
-          steps.cache-check.outputs.cache-hit != 'true' &&
+          steps.final-status.outputs.cache_hit != 'true' &&
           steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
           echo "🧪 Running tests with ${{ inputs.parallel_workers }} workers..."
@@ -229,7 +333,7 @@ jobs:
 
       - name: Extract test results
         id: extract-results
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: |
           python3 -c "
           import json
@@ -331,7 +435,7 @@ jobs:
           "
 
       - name: Save results to cache
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: |
           echo "💾 Saving results to cache..."
           mkdir -p cached_target
@@ -340,6 +444,11 @@ jobs:
           [ -f test_data.json ] && cp test_data.json cached_target/
           [ -f test_output.txt ] && cp test_output.txt cached_target/
           [ -f results.json ] && cp results.json cached_target/
+
+          # Mark cache as complete (not pending)
+          echo "complete" > cached_target/status
+          echo "completed=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> cached_target/status
+          echo "run_id=${{ github.run_id }}" >> cached_target/status
 
           # Save outputs for future cache loads (no leading spaces!)
           cat > cached_target/outputs.env << 'EOF'
@@ -357,21 +466,16 @@ jobs:
           # Remove leading whitespace from the env file
           sed -i 's/^[[:space:]]*//' cached_target/outputs.env
 
-      # Explicitly save cache (not relying on post-hook) so waiting jobs find it
+      # Save complete results so other PRs can find it
       - name: Upload to cache
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         uses: actions/cache/save@v4
         with:
-          name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
-          path: |
-            test_data.json
-            test_output.txt
-            results.json
-          retention-days: 3
-          if-no-files-found: ignore
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
 
       - name: Upload test artifacts
-        if: steps.cache-check.outputs.cache-hit != 'true'
+        if: steps.final-status.outputs.cache_hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
@@ -386,7 +490,7 @@ jobs:
       - name: Set final outputs
         id: results
         run: |
-          if [ "${{ steps.cache-check.outputs.cache-hit }}" == "true" ]; then
+          if [ "${{ steps.final-status.outputs.cache_hit }}" == "true" ]; then
             echo "📋 Using cached results"
             # Outputs already set by load-cache step, copy them
             echo "total=${{ steps.load-cache.outputs.total || '0' }}" >> $GITHUB_OUTPUT
