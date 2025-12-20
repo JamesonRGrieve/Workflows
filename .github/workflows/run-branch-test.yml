@@ -84,6 +84,7 @@ jobs:
       has_errors: ${{ steps.results.outputs.has_errors }}
       error_type: ${{ steps.results.outputs.error_type }}
       failing_count: ${{ steps.results.outputs.failing_count }}
+      error_count: ${{ steps.results.outputs.error_count }}
       skipped_count: ${{ steps.results.outputs.skipped_count }}
       xfailed_count: ${{ steps.results.outputs.xfailed_count }}
 
@@ -343,6 +344,7 @@ jobs:
           percentage = 0.0
           passing_tests = []
           failing_tests = []
+          error_tests = []
           skipped_tests = []
           xfailed_tests = []
           all_tests = []
@@ -367,8 +369,10 @@ jobs:
                       all_tests.append(nodeid)
                       if outcome == 'passed':
                           passing_tests.append(nodeid)
-                      elif outcome in ['failed', 'error']:
+                      elif outcome == 'failed':
                           failing_tests.append(nodeid)
+                      elif outcome == 'error':
+                          error_tests.append(nodeid)
                       elif outcome == 'skipped':
                           skipped_tests.append(nodeid)
                           reason = test.get('longrepr', 'No reason')
@@ -415,6 +419,7 @@ jobs:
               json.dump({
                   'passing_tests': passing_tests,
                   'failing_tests': failing_tests,
+                  'error_tests': error_tests,
                   'skipped_tests': skipped_tests,
                   'xfailed_tests': xfailed_tests,
                   'all_tests': all_tests,
@@ -430,6 +435,7 @@ jobs:
               f.write(f'passed={passed}\n')
               f.write(f'percentage={percentage:.2f}\n')
               f.write(f'failing_count={len(failing_tests)}\n')
+              f.write(f'error_count={len(error_tests)}\n')
               f.write(f'skipped_count={len(skipped_tests)}\n')
               f.write(f'xfailed_count={len(xfailed_tests)}\n')
           "
@@ -460,6 +466,7 @@ jobs:
           has_errors=${{ steps.check-collection.outputs.has_errors || 'false' }}
           error_type=${{ steps.check-collection.outputs.error_type || 'none' }}
           failing_count=${{ steps.extract-results.outputs.failing_count || '0' }}
+          error_count=${{ steps.extract-results.outputs.error_count || '0' }}
           skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}
           xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}
           EOF
@@ -501,6 +508,7 @@ jobs:
             echo "has_errors=${{ steps.load-cache.outputs.has_errors || 'false' }}" >> $GITHUB_OUTPUT
             echo "error_type=${{ steps.load-cache.outputs.error_type || 'none' }}" >> $GITHUB_OUTPUT
             echo "failing_count=${{ steps.load-cache.outputs.failing_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "error_count=${{ steps.load-cache.outputs.error_count || '0' }}" >> $GITHUB_OUTPUT
             echo "skipped_count=${{ steps.load-cache.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
             echo "xfailed_count=${{ steps.load-cache.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
           else
@@ -513,6 +521,7 @@ jobs:
             echo "has_errors=${{ steps.check-collection.outputs.has_errors || 'false' }}" >> $GITHUB_OUTPUT
             echo "error_type=${{ steps.check-collection.outputs.error_type || 'none' }}" >> $GITHUB_OUTPUT
             echo "failing_count=${{ steps.extract-results.outputs.failing_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "error_count=${{ steps.extract-results.outputs.error_count || '0' }}" >> $GITHUB_OUTPUT
             echo "skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
             echo "xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
           fi
