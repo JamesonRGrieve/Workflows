@@ -202,37 +202,39 @@ jobs:
               with open('results.json') as f:
                   results = json.load(f)
 
-              if results.get('exitcode', 0) <= 1 and 'summary' in results:
+              # Extract results regardless of exit code - we want to capture
+              # whatever tests ran, even if pytest had errors
+              if 'summary' in results:
                   summary = results['summary']
                   total = summary.get('total', 0)
                   passed = summary.get('passed', 0)
 
-                  for test in results.get('tests', []):
-                      outcome = test.get('outcome')
-                      nodeid = test.get('nodeid', '')
-                      if not nodeid:
-                          continue
-                      all_tests.append(nodeid)
-                      if outcome == 'passed':
-                          passing_tests.append(nodeid)
-                      elif outcome == 'failed':
-                          failing_tests.append(nodeid)
-                      elif outcome == 'error':
-                          error_tests.append(nodeid)
-                      elif outcome == 'skipped':
-                          skipped_tests.append(nodeid)
-                          reason = test.get('longrepr', 'No reason')
-                          if isinstance(reason, list):
-                              reason = reason[0] if reason else 'No reason'
-                          skipped_with_reasons[nodeid] = str(reason).strip()
-                      elif outcome == 'xfailed':
-                          xfailed_tests.append(nodeid)
-                          reason = test.get('longrepr', 'No reason')
-                          if isinstance(reason, list):
-                              reason = reason[0] if reason else 'No reason'
-                          xfailed_with_reasons[nodeid] = str(reason).strip()
-                      elif outcome == 'xpassed':
-                          xpassed_tests.append(nodeid)
+              for test in results.get('tests', []):
+                  outcome = test.get('outcome')
+                  nodeid = test.get('nodeid', '')
+                  if not nodeid:
+                      continue
+                  all_tests.append(nodeid)
+                  if outcome == 'passed':
+                      passing_tests.append(nodeid)
+                  elif outcome == 'failed':
+                      failing_tests.append(nodeid)
+                  elif outcome == 'error':
+                      error_tests.append(nodeid)
+                  elif outcome == 'skipped':
+                      skipped_tests.append(nodeid)
+                      reason = test.get('longrepr', 'No reason')
+                      if isinstance(reason, list):
+                          reason = reason[0] if reason else 'No reason'
+                      skipped_with_reasons[nodeid] = str(reason).strip()
+                  elif outcome == 'xfailed':
+                      xfailed_tests.append(nodeid)
+                      reason = test.get('longrepr', 'No reason')
+                      if isinstance(reason, list):
+                          reason = reason[0] if reason else 'No reason'
+                      xfailed_with_reasons[nodeid] = str(reason).strip()
+                  elif outcome == 'xpassed':
+                      xpassed_tests.append(nodeid)
 
               percentage = (passed / total * 100) if total > 0 else 0
           except FileNotFoundError:
