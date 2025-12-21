@@ -87,6 +87,7 @@ jobs:
       error_count: ${{ steps.results.outputs.error_count }}
       skipped_count: ${{ steps.results.outputs.skipped_count }}
       xfailed_count: ${{ steps.results.outputs.xfailed_count }}
+      xpassed_count: ${{ steps.results.outputs.xpassed_count }}
 
     steps:
       # Define cache keys
@@ -94,7 +95,7 @@ jobs:
         id: cache-keys
         run: |
           # Version bump forces cache invalidation when extraction logic changes
-          CACHE_VERSION="v2"
+          CACHE_VERSION="v3"
           BASE_KEY="pytest-${CACHE_VERSION}-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}"
           echo "base_key=$BASE_KEY" >> $GITHUB_OUTPUT
           echo "pending_key=${BASE_KEY}-pending-${{ github.run_id }}" >> $GITHUB_OUTPUT
@@ -349,6 +350,7 @@ jobs:
           error_tests = []
           skipped_tests = []
           xfailed_tests = []
+          xpassed_tests = []
           all_tests = []
           skipped_with_reasons = {}
           xfailed_with_reasons = {}
@@ -387,6 +389,8 @@ jobs:
                           if isinstance(reason, list):
                               reason = reason[0] if reason else 'No reason'
                           xfailed_with_reasons[nodeid] = str(reason).strip()
+                      elif outcome == 'xpassed':
+                          xpassed_tests.append(nodeid)
 
               percentage = (passed / total * 100) if total > 0 else 0
           except FileNotFoundError:
@@ -424,6 +428,7 @@ jobs:
                   'error_tests': error_tests,
                   'skipped_tests': skipped_tests,
                   'xfailed_tests': xfailed_tests,
+                  'xpassed_tests': xpassed_tests,
                   'all_tests': all_tests,
                   'skipped_tests_with_reasons': skipped_with_reasons,
                   'xfailed_tests_with_reasons': xfailed_with_reasons,
@@ -440,6 +445,7 @@ jobs:
               f.write(f'error_count={len(error_tests)}\n')
               f.write(f'skipped_count={len(skipped_tests)}\n')
               f.write(f'xfailed_count={len(xfailed_tests)}\n')
+              f.write(f'xpassed_count={len(xpassed_tests)}\n')
           "
 
       - name: Save results to cache
@@ -471,6 +477,7 @@ jobs:
           error_count=${{ steps.extract-results.outputs.error_count || '0' }}
           skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}
           xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}
+          xpassed_count=${{ steps.extract-results.outputs.xpassed_count || '0' }}
           EOF
           # Remove leading whitespace from the env file
           sed -i 's/^[[:space:]]*//' cached_target/outputs.env
@@ -513,6 +520,7 @@ jobs:
             echo "error_count=${{ steps.load-cache.outputs.error_count || '0' }}" >> $GITHUB_OUTPUT
             echo "skipped_count=${{ steps.load-cache.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
             echo "xfailed_count=${{ steps.load-cache.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "xpassed_count=${{ steps.load-cache.outputs.xpassed_count || '0' }}" >> $GITHUB_OUTPUT
           else
             echo "📋 Using fresh results"
             echo "total=${{ steps.extract-results.outputs.total || '0' }}" >> $GITHUB_OUTPUT
@@ -526,6 +534,7 @@ jobs:
             echo "error_count=${{ steps.extract-results.outputs.error_count || '0' }}" >> $GITHUB_OUTPUT
             echo "skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
             echo "xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "xpassed_count=${{ steps.extract-results.outputs.xpassed_count || '0' }}" >> $GITHUB_OUTPUT
           fi
 
   # Compare results
