@@ -93,7 +93,9 @@ jobs:
       - name: Set cache keys
         id: cache-keys
         run: |
-          BASE_KEY="pytest-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}"
+          # Version bump forces cache invalidation when extraction logic changes
+          CACHE_VERSION="v2"
+          BASE_KEY="pytest-${CACHE_VERSION}-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}"
           echo "base_key=$BASE_KEY" >> $GITHUB_OUTPUT
           echo "pending_key=${BASE_KEY}-pending-${{ github.run_id }}" >> $GITHUB_OUTPUT
           echo "🔍 Cache base key: $BASE_KEY"
