@@ -192,6 +192,7 @@ jobs:
           error_tests = []
           skipped_tests = []
           xfailed_tests = []
+          xpassed_tests = []
           all_tests = []
           skipped_with_reasons = {}
           xfailed_with_reasons = {}
@@ -230,6 +231,8 @@ jobs:
                           if isinstance(reason, list):
                               reason = reason[0] if reason else 'No reason'
                           xfailed_with_reasons[nodeid] = str(reason).strip()
+                      elif outcome == 'xpassed':
+                          xpassed_tests.append(nodeid)
 
               percentage = (passed / total * 100) if total > 0 else 0
           except FileNotFoundError:
@@ -267,6 +270,7 @@ jobs:
                   'error_tests': error_tests,
                   'skipped_tests': skipped_tests,
                   'xfailed_tests': xfailed_tests,
+                  'xpassed_tests': xpassed_tests,
                   'all_tests': all_tests,
                   'skipped_tests_with_reasons': skipped_with_reasons,
                   'xfailed_tests_with_reasons': xfailed_with_reasons,
@@ -283,6 +287,7 @@ jobs:
               f.write(f'error_count={len(error_tests)}\n')
               f.write(f'skipped_count={len(skipped_tests)}\n')
               f.write(f'xfailed_count={len(xfailed_tests)}\n')
+              f.write(f'xpassed_count={len(xpassed_tests)}\n')
           "
 
       - name: Upload test artifacts

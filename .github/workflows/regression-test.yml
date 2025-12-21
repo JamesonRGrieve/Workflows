@@ -300,8 +300,8 @@ jobs:
 
           # States ordered from best to worst for matrix display
           # This ordering puts improvements below diagonal, regressions above
-          STATES = ["Pass", "Skip", "XFail", "Fail", "Error", "Nonexistent"]
-          STATE_KEYS = ["passing", "skipped", "xfailed", "failing", "error", "nonexistent"]
+          STATES = ["Pass", "XPass", "Skip", "XFail", "Fail", "Error", "Nonexistent"]
+          STATE_KEYS = ["passing", "xpassed", "skipped", "xfailed", "failing", "error", "nonexistent"]
 
           def load_json(path: str) -> dict:
               file_path = Path(path)
@@ -350,6 +350,8 @@ jobs:
                       data["skipped"].add(str(test_id))
                   elif status in {"xfailed", "xfail"}:
                       data["xfailed"].add(str(test_id))
+                  elif status in {"xpassed", "xpass"}:
+                      data["xpassed"].add(str(test_id))
                   else:
                       data["other"].add(str(test_id))
 
@@ -360,6 +362,7 @@ jobs:
                   "error": set(coerce_list(raw.get("error_tests"))),
                   "skipped": set(coerce_list(raw.get("skipped_tests"))),
                   "xfailed": set(coerce_list(raw.get("xfailed_tests"))),
+                  "xpassed": set(coerce_list(raw.get("xpassed_tests"))),
                   "warnings": set(coerce_list(raw.get("warnings"))),
                   "all": set(coerce_list(raw.get("all_tests"))),
                   "other": set(),
@@ -374,6 +377,7 @@ jobs:
                       | data["error"]
                       | data["skipped"]
                       | data["xfailed"]
+                      | data["xpassed"]
                       | data["other"]
                   )
 
@@ -393,19 +397,25 @@ jobs:
               # Anything to Nonexistent is regression
               if to_state == "Nonexistent":
                   return "regression"
-              # Pass to anything else is regression
-              if from_state == "Pass":
+              # Pass/XPass to anything else (except each other) is regression
+              if from_state == "Pass" and to_state != "XPass":
                   return "regression"
-              # Skip to Fail/Error already covered above
+              if from_state == "XPass" and to_state != "Pass":
+                  return "regression"
 
               # Neutrals
               if from_state == "Fail" and to_state == "XFail":
                   return "neutral"
               if from_state == "Skip" and to_state == "XFail":
                   return "neutral"
+              # Pass <-> XPass is neutral (just adding/removing xfail marker)
+              if from_state == "Pass" and to_state == "XPass":
+                  return "neutral"
+              if from_state == "XPass" and to_state == "Pass":
+                  return "neutral"
 
               # Improvements (italic): moving to a better state
-              if to_state == "Pass":
+              if to_state in ["Pass", "XPass"]:
                   return "improvement"
               if from_state in ["Fail", "Error"] and to_state == "Skip":
                   return "improvement"
@@ -432,6 +442,7 @@ jobs:
               """Get the set of tests in a given state."""
               state_map = {
                   "Pass": "passing",
+                  "XPass": "xpassed",
                   "Skip": "skipped",
                   "XFail": "xfailed",
                   "Fail": "failing",
