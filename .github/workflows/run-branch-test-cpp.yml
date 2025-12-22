@@ -1,0 +1,651 @@
+name: Run Branch Tests for C++ with Regression Detection
+
+on:
+  workflow_call:
+    inputs:
+      target_branch:
+        description: "Target branch to compare against (e.g., main)."
+        required: true
+        type: string
+      cmake-version:
+        description: "CMake version to use."
+        required: false
+        type: string
+        default: "3.28"
+      compiler:
+        description: "Compiler to use (gcc, clang). Auto-detects if empty."
+        required: false
+        type: string
+        default: ""
+      build-type:
+        description: "CMake build type (Debug, Release, RelWithDebInfo, MinSizeRel)."
+        required: false
+        type: string
+        default: "Release"
+      build-dir:
+        description: "Build directory relative to repo root."
+        required: false
+        type: string
+        default: "build"
+      cmake-args:
+        description: "Additional CMake configuration arguments."
+        required: false
+        type: string
+        default: ""
+      test-args:
+        description: "Additional CTest arguments."
+        required: false
+        type: string
+        default: ""
+      runs_on:
+        description: "Runner label."
+        required: false
+        type: string
+        default: '["self-hosted", "multithreaded"]'
+      parallel_workers:
+        description: "Number of parallel CTest workers. Leave empty for auto-detect (6 for multithreaded, 1 for singlethreaded). Use 'auto' for CPU count."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        required: false
+      DISCORD_USER_MAP:
+        required: false
+    outputs:
+      has_regressions:
+        description: "Whether regressions were detected"
+        value: ${{ jobs.compare.outputs.has_regressions }}
+      regression_count:
+        description: "Number of regressions"
+        value: ${{ jobs.compare.outputs.regression_count }}
+
+jobs:
+  # Detect if C++ test framework is present
+  detect-frameworks:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    outputs:
+      has_cpp_tests: ${{ steps.detect.outputs.has_cpp_tests }}
+      build_system: ${{ steps.detect.outputs.build_system }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Detect C++ test frameworks
+        id: detect
+        run: |
+          HAS_CPP_TESTS="false"
+          BUILD_SYSTEM="none"
+
+          # Check for CMake-based project
+          if [ -f "CMakeLists.txt" ]; then
+            BUILD_SYSTEM="cmake"
+
+            # Check for test-related CMake content
+            if grep -rqE "(enable_testing|add_test|gtest|catch|boost.*test)" CMakeLists.txt 2>/dev/null || \
+               find . -name "CMakeLists.txt" -exec grep -lE "(enable_testing|add_test|gtest|catch)" {} \; 2>/dev/null | head -1 | grep -q .; then
+              HAS_CPP_TESTS="true"
+              echo "Detected: CMake with testing"
+            fi
+          fi
+
+          # Check for Meson-based project
+          if [ -f "meson.build" ]; then
+            BUILD_SYSTEM="meson"
+            if grep -qE "(test\(|gtest|catch)" meson.build 2>/dev/null; then
+              HAS_CPP_TESTS="true"
+              echo "Detected: Meson with testing"
+            fi
+          fi
+
+          # Check for test source files
+          if find . -name "*_test.cpp" -o -name "*_test.cc" -o -name "test_*.cpp" -o -name "test_*.cc" 2>/dev/null | head -1 | grep -q .; then
+            HAS_CPP_TESTS="true"
+            echo "Detected: C++ test files"
+          fi
+
+          # Check for GTest/Catch2 includes
+          if grep -rq "#include.*gtest\|#include.*catch" --include="*.cpp" --include="*.cc" --include="*.h" --include="*.hpp" 2>/dev/null; then
+            HAS_CPP_TESTS="true"
+            echo "Detected: GTest or Catch2 includes"
+          fi
+
+          echo "has_cpp_tests=$HAS_CPP_TESTS" >> $GITHUB_OUTPUT
+          echo "build_system=$BUILD_SYSTEM" >> $GITHUB_OUTPUT
+
+          if [ "$HAS_CPP_TESTS" = "true" ]; then
+            echo "C++ tests detected (build system: $BUILD_SYSTEM)"
+          else
+            echo "No C++ tests detected"
+          fi
+
+  # Test source branch (always fresh, no caching)
+  test-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp_tests == 'true'
+    uses: ./.github/workflows/test-cpp-gtest.yml
+    with:
+      ref: ""  # Default checkout = PR branch
+      cmake-version: ${{ inputs.cmake-version }}
+      compiler: ${{ inputs.compiler }}
+      build-type: ${{ inputs.build-type }}
+      build-dir: ${{ inputs.build-dir }}
+      cmake-args: ${{ inputs.cmake-args }}
+      test-args: ${{ inputs.test-args }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Test target branch with smart caching
+  test-target:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp_tests == 'true'
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    outputs:
+      total: ${{ steps.results.outputs.total }}
+      passed: ${{ steps.results.outputs.passed }}
+      percentage: ${{ steps.results.outputs.percentage }}
+      collection_errors: ${{ steps.results.outputs.collection_errors }}
+      no_tests_found: ${{ steps.results.outputs.no_tests_found }}
+      has_errors: ${{ steps.results.outputs.has_errors }}
+      error_type: ${{ steps.results.outputs.error_type }}
+      failing_count: ${{ steps.results.outputs.failing_count }}
+      error_count: ${{ steps.results.outputs.error_count }}
+      skipped_count: ${{ steps.results.outputs.skipped_count }}
+      xfailed_count: ${{ steps.results.outputs.xfailed_count }}
+
+    steps:
+      # Define cache keys
+      - name: Set cache keys
+        id: cache-keys
+        run: |
+          CACHE_VERSION="v1"
+          BASE_KEY="cpp-${CACHE_VERSION}-${{ inputs.target_branch }}-${{ github.event.pull_request.base.sha || github.sha }}"
+          echo "base_key=$BASE_KEY" >> $GITHUB_OUTPUT
+          echo "pending_key=${BASE_KEY}-pending-${{ github.run_id }}" >> $GITHUB_OUTPUT
+          echo "Cache base key: $BASE_KEY"
+
+      # Try to restore complete results first
+      - name: Check for complete cache
+        id: cache-complete
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
+      # If no complete cache, check for any pending cache
+      - name: Check for pending cache
+        id: cache-pending
+        if: steps.cache-complete.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_pending
+          key: ${{ steps.cache-keys.outputs.base_key }}-pending-impossible-match
+          restore-keys: |
+            ${{ steps.cache-keys.outputs.base_key }}-pending-
+
+      - name: Determine initial status
+        id: initial-status
+        run: |
+          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+            echo "status=complete" >> $GITHUB_OUTPUT
+            echo "Found complete cache - will use it"
+          elif [ "${{ steps.cache-pending.outputs.cache-hit }}" == "true" ]; then
+            echo "status=pending" >> $GITHUB_OUTPUT
+            echo "Found pending cache - another job is running, will poll"
+          else
+            echo "status=miss" >> $GITHUB_OUTPUT
+            echo "No cache found - will run tests"
+          fi
+
+      # If cache miss, save pending marker
+      - name: Create pending marker
+        if: steps.initial-status.outputs.status == 'miss'
+        run: |
+          mkdir -p cached_pending_marker
+          echo "pending" > cached_pending_marker/status
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> cached_pending_marker/status
+          echo "run_id=${{ github.run_id }}" >> cached_pending_marker/status
+
+      - name: Save pending marker
+        if: steps.initial-status.outputs.status == 'miss'
+        uses: actions/cache/save@v4
+        with:
+          path: cached_pending_marker
+          key: ${{ steps.cache-keys.outputs.pending_key }}
+
+      # Poll for complete cache if pending found
+      - name: Poll for complete cache
+        id: poll-cache
+        if: steps.initial-status.outputs.status == 'pending'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Another job is running tests, polling for results..."
+          TOTAL_WAIT=0
+          MAX_WAIT=1200  # 20 minutes
+          DELAY=5
+          CACHE_KEY="${{ steps.cache-keys.outputs.base_key }}"
+
+          while [ $TOTAL_WAIT -lt $MAX_WAIT ]; do
+            echo "Waiting ${DELAY}s... (${TOTAL_WAIT}s / ${MAX_WAIT}s elapsed)"
+            sleep $DELAY
+            TOTAL_WAIT=$((TOTAL_WAIT + DELAY))
+
+            CACHE_CHECK=$(gh cache list --key "$CACHE_KEY" --limit 1 2>/dev/null || echo "")
+            if echo "$CACHE_CHECK" | grep -q "$CACHE_KEY"; then
+              echo "Complete cache is now available!"
+              echo "found=true" >> $GITHUB_OUTPUT
+              break
+            fi
+
+            DELAY=$((DELAY * 2))
+            if [ $DELAY -gt 60 ]; then
+              DELAY=60
+            fi
+          done
+
+          if [ $TOTAL_WAIT -ge $MAX_WAIT ]; then
+            echo "Timeout after ${MAX_WAIT}s - will run tests ourselves"
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Restore cache after polling
+      - name: Restore cache after poll
+        id: cache-after-poll
+        if: steps.poll-cache.outputs.found == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
+      - name: Determine final status
+        id: final-status
+        run: |
+          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+            echo "cache_hit=true" >> $GITHUB_OUTPUT
+            echo "Using complete cache (found immediately)"
+          elif [ "${{ steps.cache-after-poll.outputs.cache-hit }}" == "true" ]; then
+            echo "cache_hit=true" >> $GITHUB_OUTPUT
+            echo "Using complete cache (found after polling)"
+          else
+            echo "cache_hit=false" >> $GITHUB_OUTPUT
+            echo "Will run tests"
+          fi
+
+      - name: Load cached results
+        id: load-cache
+        if: steps.final-status.outputs.cache_hit == 'true'
+        run: |
+          echo "Loading cached target results"
+          if [ -f cached_target/outputs.env ]; then
+            cat cached_target/outputs.env >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload cached artifact
+        if: steps.final-status.outputs.cache_hit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+          path: cached_target/test_data.json
+          if-no-files-found: ignore
+
+      # === Only run tests if no usable cache ===
+      - name: Checkout
+        if: steps.final-status.outputs.cache_hit != 'true'
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
+          ref: ${{ inputs.target_branch }}
+
+      - name: Set up CMake
+        if: steps.final-status.outputs.cache_hit != 'true'
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "${{ inputs.cmake-version }}"
+
+      - name: Set up compiler
+        if: steps.final-status.outputs.cache_hit != 'true'
+        run: |
+          COMPILER="${{ inputs.compiler }}"
+          if [ -z "$COMPILER" ]; then
+            if command -v clang++ &> /dev/null; then
+              COMPILER="clang"
+            else
+              COMPILER="gcc"
+            fi
+          fi
+
+          if [ "$COMPILER" = "clang" ]; then
+            echo "CC=clang" >> $GITHUB_ENV
+            echo "CXX=clang++" >> $GITHUB_ENV
+          else
+            echo "CC=gcc" >> $GITHUB_ENV
+            echo "CXX=g++" >> $GITHUB_ENV
+          fi
+
+      - name: Configure CMake
+        id: cmake-configure
+        if: steps.final-status.outputs.cache_hit != 'true'
+        run: |
+          set +e
+          cmake -B ${{ inputs.build-dir }} \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build-type }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            ${{ inputs.cmake-args }} \
+            > cmake_configure_output.txt 2>&1
+          CMAKE_EXIT=$?
+          set -e
+
+          cat cmake_configure_output.txt
+
+          if [ $CMAKE_EXIT -ne 0 ]; then
+            echo "::error::CMake configuration failed"
+            echo "cmake_failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "cmake_failed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        id: check-build
+        if: steps.final-status.outputs.cache_hit != 'true' && steps.cmake-configure.outputs.cmake_failed != 'true'
+        run: |
+          set +e
+          cmake --build ${{ inputs.build-dir }} --parallel > build_output.txt 2>&1
+          BUILD_EXIT=$?
+          set -e
+
+          cat build_output.txt
+
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "has_build_errors=true" >> $GITHUB_OUTPUT
+            echo "error_type=BuildError" >> $GITHUB_OUTPUT
+          else
+            echo "has_build_errors=false" >> $GITHUB_OUTPUT
+            echo "error_type=none" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for test discovery
+        id: check-collection
+        if: steps.final-status.outputs.cache_hit != 'true' && steps.check-build.outputs.has_build_errors != 'true' && steps.cmake-configure.outputs.cmake_failed != 'true'
+        run: |
+          cd ${{ inputs.build-dir }}
+          set +e
+          ctest -N > ../collection_output.txt 2>&1
+          CTEST_EXIT=$?
+          set -e
+
+          cat ../collection_output.txt
+
+          HAS_COLLECTION_ERRORS="false"
+          NO_TESTS_FOUND="false"
+          ERROR_TYPE="none"
+
+          if [ $CTEST_EXIT -ne 0 ]; then
+            HAS_COLLECTION_ERRORS="true"
+            ERROR_TYPE="DiscoveryError"
+          else
+            TEST_COUNT=$(grep -oE "Total Tests: [0-9]+" ../collection_output.txt | grep -oE "[0-9]+" || echo "0")
+            if [ "$TEST_COUNT" = "0" ] || [ -z "$TEST_COUNT" ]; then
+              NO_TESTS_FOUND="true"
+              ERROR_TYPE="NoTestsFound"
+            fi
+          fi
+
+          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
+          echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
+          echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
+
+          if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
+            echo "has_errors=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_errors=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run tests
+        id: run-tests
+        continue-on-error: true
+        if: |
+          steps.final-status.outputs.cache_hit != 'true' &&
+          steps.check-build.outputs.has_build_errors != 'true' &&
+          steps.cmake-configure.outputs.cmake_failed != 'true' &&
+          steps.check-collection.outputs.has_collection_errors != 'true' &&
+          steps.check-collection.outputs.no_tests_found != 'true'
+        run: |
+          WORKERS="${{ inputs.parallel_workers }}"
+          if [ -z "$WORKERS" ]; then
+            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
+              WORKERS="6"
+            else
+              WORKERS="1"
+            fi
+          fi
+
+          echo "Running tests with $WORKERS parallel jobs..."
+          cd ${{ inputs.build-dir }}
+
+          set +e
+          ctest --output-on-failure \
+            --parallel $WORKERS \
+            --output-junit ../test_results.xml \
+            ${{ inputs.test-args }} \
+            2>&1 | tee ../test_output.txt
+          CTEST_EXIT=$?
+          set -e
+
+          echo "ctest_exit_code=$CTEST_EXIT" >> $GITHUB_OUTPUT
+
+      - name: Extract test results
+        id: extract-results
+        if: steps.final-status.outputs.cache_hit != 'true'
+        run: |
+          python3 -c "
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          total = passed = 0
+          passing_tests = []
+          failing_tests = []
+          error_tests = []
+          skipped_tests = []
+          xfailed_tests = []
+          all_tests = []
+
+          xml_path = Path('test_results.xml')
+          if xml_path.exists():
+              try:
+                  tree = ET.parse(xml_path)
+                  root = tree.getroot()
+
+                  testsuites = root.findall('.//testsuite')
+                  if not testsuites and root.tag == 'testsuite':
+                      testsuites = [root]
+
+                  for testsuite in testsuites:
+                      suite_name = testsuite.get('name', 'unknown')
+                      for testcase in testsuite.findall('testcase'):
+                          test_name = testcase.get('name', 'unknown')
+                          classname = testcase.get('classname', suite_name)
+                          full_name = f'{classname}::{test_name}'
+
+                          all_tests.append(full_name)
+                          total += 1
+
+                          if test_name.startswith('DISABLED_') or classname.startswith('DISABLED_'):
+                              xfailed_tests.append(full_name)
+                              continue
+
+                          failure = testcase.find('failure')
+                          error = testcase.find('error')
+                          skipped = testcase.find('skipped')
+
+                          if failure is not None:
+                              failing_tests.append(full_name)
+                          elif error is not None:
+                              error_tests.append(full_name)
+                          elif skipped is not None:
+                              skipped_tests.append(full_name)
+                          else:
+                              passed += 1
+                              passing_tests.append(full_name)
+              except Exception as e:
+                  print(f'Error parsing XML: {e}')
+
+          percentage = (passed / total * 100) if total > 0 else 0
+
+          with open('test_data.json', 'w') as f:
+              json.dump({
+                  'passing_tests': passing_tests,
+                  'failing_tests': failing_tests,
+                  'error_tests': error_tests,
+                  'skipped_tests': skipped_tests,
+                  'xfailed_tests': xfailed_tests,
+                  'xpassed_tests': [],
+                  'all_tests': all_tests,
+                  'skipped_tests_with_reasons': {},
+                  'xfailed_tests_with_reasons': {},
+                  'warnings': []
+              }, f, indent=2)
+
+          print(f'Results: {passed}/{total} ({percentage:.1f}%)')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={total}\n')
+              f.write(f'passed={passed}\n')
+              f.write(f'percentage={percentage:.2f}\n')
+              f.write(f'failing_count={len(failing_tests)}\n')
+              f.write(f'error_count={len(error_tests)}\n')
+              f.write(f'skipped_count={len(skipped_tests)}\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\n')
+          "
+
+      - name: Save results to cache
+        if: steps.final-status.outputs.cache_hit != 'true'
+        run: |
+          echo "Saving results to cache..."
+          mkdir -p cached_target
+
+          [ -f test_data.json ] && cp test_data.json cached_target/
+          [ -f test_output.txt ] && cp test_output.txt cached_target/
+          [ -f test_results.xml ] && cp test_results.xml cached_target/
+
+          echo "complete" > cached_target/status
+
+          cat > cached_target/outputs.env << EOF
+          total=${{ steps.extract-results.outputs.total || '0' }}
+          passed=${{ steps.extract-results.outputs.passed || '0' }}
+          percentage=${{ steps.extract-results.outputs.percentage || '0.00' }}
+          collection_errors=${{ steps.check-collection.outputs.has_collection_errors || 'false' }}
+          no_tests_found=${{ steps.check-collection.outputs.no_tests_found || 'false' }}
+          has_errors=${{ steps.check-collection.outputs.has_errors || 'false' }}
+          error_type=${{ steps.check-collection.outputs.error_type || 'none' }}
+          failing_count=${{ steps.extract-results.outputs.failing_count || '0' }}
+          error_count=${{ steps.extract-results.outputs.error_count || '0' }}
+          skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}
+          xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}
+          EOF
+
+      - name: Upload to cache
+        if: steps.final-status.outputs.cache_hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
+      - name: Upload test artifacts
+        if: steps.final-status.outputs.cache_hit != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            test_data.json
+            test_output.txt
+            test_results.xml
+          retention-days: 3
+          if-no-files-found: ignore
+
+      # Consolidate outputs
+      - name: Set final outputs
+        id: results
+        run: |
+          if [ "${{ steps.final-status.outputs.cache_hit }}" == "true" ]; then
+            echo "Using cached results"
+            echo "total=${{ steps.load-cache.outputs.total || '0' }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ steps.load-cache.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ steps.load-cache.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ steps.load-cache.outputs.collection_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ steps.load-cache.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+            echo "has_errors=${{ steps.load-cache.outputs.has_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "error_type=${{ steps.load-cache.outputs.error_type || 'none' }}" >> $GITHUB_OUTPUT
+            echo "failing_count=${{ steps.load-cache.outputs.failing_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "error_count=${{ steps.load-cache.outputs.error_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "skipped_count=${{ steps.load-cache.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "xfailed_count=${{ steps.load-cache.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
+          else
+            echo "Using fresh results"
+            echo "total=${{ steps.extract-results.outputs.total || '0' }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ steps.extract-results.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ steps.extract-results.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ steps.check-collection.outputs.has_collection_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ steps.check-collection.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+            echo "has_errors=${{ steps.check-collection.outputs.has_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "error_type=${{ steps.check-collection.outputs.error_type || 'none' }}" >> $GITHUB_OUTPUT
+            echo "failing_count=${{ steps.extract-results.outputs.failing_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "error_count=${{ steps.extract-results.outputs.error_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "skipped_count=${{ steps.extract-results.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "xfailed_count=${{ steps.extract-results.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
+          fi
+
+  # Compare results
+  compare:
+    needs: [test-source, test-target]
+    if: always() && needs.test-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.test-target.outputs.passed }}
+      baseline_total: ${{ needs.test-target.outputs.total }}
+      baseline_percentage: ${{ needs.test-target.outputs.percentage }}
+      current_passed: ${{ needs.test-source.outputs.passed }}
+      current_total: ${{ needs.test-source.outputs.total }}
+      current_percentage: ${{ needs.test-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.test-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.test-target.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.test-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.test-source.outputs.no_tests_found }}
+      artifact_name: regression_cpp_${{ github.event.pull_request.number || github.run_id }}
+
+  # Notify on regressions
+  notify:
+    needs: [test-source, test-target, compare]
+    if: |
+      always() &&
+      (needs.compare.outputs.has_regressions == 'true' || needs.compare.result == 'failure')
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    steps:
+      - name: Send notification
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "No Discord webhook configured, skipping notification"
+            exit 0
+          fi
+
+          MSG="**C++ Test Regression Alert**\n"
+          MSG+="PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}\n"
+          MSG+="\`${{ github.head_ref }}\` → \`${{ inputs.target_branch }}\`\n\n"
+          MSG+="Source: ${{ needs.test-source.outputs.passed }}/${{ needs.test-source.outputs.total }}\n"
+          MSG+="Target: ${{ needs.test-target.outputs.passed }}/${{ needs.test-target.outputs.total }}\n"
+          MSG+="Regressions: ${{ needs.compare.outputs.regression_count || '?' }}\n\n"
+          MSG+="[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"content\": \"$(echo -e "$MSG")\"}" \
+            "$WEBHOOK" || true

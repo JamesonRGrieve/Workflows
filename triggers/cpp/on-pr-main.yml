@@ -1,0 +1,16 @@
+name: C++ PR Tests (Main Branch)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  run-cpp-tests:
+    name: Run C++ Test Comparison
+    uses: JamesonRGrieve/Workflows/.github/workflows/run-branch-test-cpp.yml@main
+    with:
+      target_branch: ${{ github.base_ref }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      DISCORD_USER_MAP: ${{ secrets.DISCORD_USER_MAP }}
