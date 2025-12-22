@@ -23,7 +23,7 @@ on:
         required: true
         type: string
       parallel_workers:
-        description: "Number of parallel workers for pytest-xdist. Leave empty for auto-detect based on runner (6 for multithreaded, 1 for singlethreaded). Use 'auto' for CPU count (caution: detects host CPUs, not container), or a number."
+        description: "Number of parallel workers for pytest-xdist. Leave empty for runner default (6 for multithreaded, 1 for singlethreaded). Use 'auto' for cgroup-aware CPU count, or a number."
         required: false
         type: string
         default: ""
@@ -105,7 +105,8 @@ jobs:
         id: check-collection
         run: |
           echo "Running pytest collection check..."
-          python -m pytest --collect-only -v > collection_output.txt 2>&1 || true
+          # Avoid spinning up asyncio/xdist plugins during collection-only checks
+          python -m pytest --collect-only -v -p no:asyncio -p no:xdist > collection_output.txt 2>&1 || true
 
           HAS_COLLECTION_ERRORS="false"
           NO_TESTS_FOUND="false"
@@ -138,13 +139,13 @@ jobs:
             fi
           fi
 
-          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
-          echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
-          echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
+          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "no_tests_found=$NO_TESTS_FOUND" >> "$GITHUB_OUTPUT"
+          echo "error_type=$ERROR_TYPE" >> "$GITHUB_OUTPUT"
           if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
-            echo "has_errors=true" >> $GITHUB_OUTPUT
+            echo "has_errors=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_errors=false" >> $GITHUB_OUTPUT
+            echo "has_errors=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run tests
@@ -152,16 +153,82 @@ jobs:
         continue-on-error: true
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          # Determine worker count based on input or runner type
+          set -euo pipefail
+
+          cgroup_auto_workers() {
+            local n=""
+
+            # cgroup v2: /sys/fs/cgroup/cpu.max => "<quota> <period>" or "max <period>"
+            if [ -f /sys/fs/cgroup/cpu.max ]; then
+              local quota period
+              quota="$(awk '{print $1}' /sys/fs/cgroup/cpu.max)"
+              period="$(awk '{print $2}' /sys/fs/cgroup/cpu.max)"
+              if [ -n "$quota" ] && [ -n "$period" ] && [ "$quota" != "max" ] && [ "$period" != "0" ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+
+            # cgroup v1: cpu.cfs_quota_us / cpu.cfs_period_us
+            if [ -z "$n" ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
+              local quota period
+              quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"
+              period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+              if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+
+            # cpuset fallback (v2: /sys/fs/cgroup/cpuset.cpus ; v1: /sys/fs/cgroup/cpuset/cpuset.cpus)
+            if [ -z "$n" ]; then
+              local f=""
+              if [ -f /sys/fs/cgroup/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset.cpus"
+              elif [ -f /sys/fs/cgroup/cpuset/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset/cpuset.cpus"
+              fi
+
+              if [ -n "$f" ]; then
+                local spec
+                spec="$(cat "$f" | tr -d '[:space:]')"
+                if [ -n "$spec" ]; then
+                  local count=0
+                  IFS=',' read -r -a parts <<< "$spec"
+                  for p in "${parts[@]}"; do
+                    if [[ "$p" == *-* ]]; then
+                      local a="${p%%-*}"
+                      local b="${p##*-}"
+                      if [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$b" -ge "$a" ]]; then
+                        count=$((count + b - a + 1))
+                      fi
+                    elif [[ "$p" =~ ^[0-9]+$ ]]; then
+                      count=$((count + 1))
+                    fi
+                  done
+                  if [ "$count" -gt 0 ]; then
+                    n="$count"
+                  fi
+                fi
+              fi
+            fi
+
+            if [ -z "$n" ] || [ "$n" -lt 1 ] 2>/dev/null; then
+              n="1"
+            fi
+
+            echo "$n"
+          }
+
           WORKERS="${{ inputs.parallel_workers }}"
           if [ -z "$WORKERS" ]; then
-            # Auto-detect based on runner type
             if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
               WORKERS="6"
             else
               WORKERS="1"
             fi
+          elif [ "$WORKERS" = "auto" ]; then
+            WORKERS="$(cgroup_auto_workers)"
           fi
+
           echo "Running tests with $WORKERS workers..."
 
           PARALLEL_FLAG=""
@@ -169,16 +236,14 @@ jobs:
             PARALLEL_FLAG="-n $WORKERS"
           fi
 
-          # Run pytest and capture exit code
-          # Use quiet mode for console (-q) - full details in JSON report
           set +e
           python -m pytest -q $PARALLEL_FLAG --json-report --json-report-file=results.json --tb=line 2>&1 | tee test_output.txt
           PYTEST_EXIT=$?
           set -e
 
-          echo "pytest_exit_code=$PYTEST_EXIT" >> $GITHUB_OUTPUT
+          echo "pytest_exit_code=$PYTEST_EXIT" >> "$GITHUB_OUTPUT"
 
-          if [ $PYTEST_EXIT -eq 137 ]; then
+          if [ "$PYTEST_EXIT" -eq 137 ]; then
             echo "::warning::Tests were killed (exit 137) - likely OOM. Partial results may be available."
           fi
 
@@ -186,7 +251,7 @@ jobs:
             echo "✅ Test execution completed (exit code: $PYTEST_EXIT)"
           else
             echo "❌ No results.json - creating empty results file"
-            echo '{"exitcode": '$PYTEST_EXIT', "summary": {"total": 0, "passed": 0}, "tests": []}' > results.json
+            echo "{\"exitcode\": $PYTEST_EXIT, \"summary\": {\"total\": 0, \"passed\": 0}, \"tests\": []}" > results.json
           fi
 
       - name: Extract test results
@@ -213,8 +278,6 @@ jobs:
               with open('results.json') as f:
                   results = json.load(f)
 
-              # Extract results regardless of exit code - we want to capture
-              # whatever tests ran, even if pytest had errors
               if 'summary' in results:
                   summary = results['summary']
                   total = summary.get('total', 0)
@@ -260,18 +323,18 @@ jobs:
               if 'warnings summary' in content:
                   section = content.split('warnings summary')[1].split('-- Docs:')[0] if '-- Docs:' in content else content.split('warnings summary')[1]
                   current = []
-                  for line in section.split('\n'):
+                  for line in section.split('\\n'):
                       line = line.rstrip()
                       if not line or line.startswith('='):
                           continue
                       if not line.startswith(' ') and ('.py:' in line or 'warning' in line.lower()):
                           if current:
-                              warnings_list.append('\n'.join(current))
+                              warnings_list.append('\\n'.join(current))
                           current = [line]
                       elif line.startswith(' ') and current:
                           current.append(line)
                   if current:
-                      warnings_list.append('\n'.join(current))
+                      warnings_list.append('\\n'.join(current))
           except:
               pass
 
@@ -293,14 +356,14 @@ jobs:
           print(f'Results: {passed}/{total} ({percentage:.1f}%)')
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'total={total}\n')
-              f.write(f'passed={passed}\n')
-              f.write(f'percentage={percentage:.2f}\n')
-              f.write(f'failing_count={len(failing_tests)}\n')
-              f.write(f'error_count={len(error_tests)}\n')
-              f.write(f'skipped_count={len(skipped_tests)}\n')
-              f.write(f'xfailed_count={len(xfailed_tests)}\n')
-              f.write(f'xpassed_count={len(xpassed_tests)}\n')
+              f.write(f'total={total}\\n')
+              f.write(f'passed={passed}\\n')
+              f.write(f'percentage={percentage:.2f}\\n')
+              f.write(f'failing_count={len(failing_tests)}\\n')
+              f.write(f'error_count={len(error_tests)}\\n')
+              f.write(f'skipped_count={len(skipped_tests)}\\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\\n')
+              f.write(f'xpassed_count={len(xpassed_tests)}\\n')
           "
 
       - name: Upload test artifacts
