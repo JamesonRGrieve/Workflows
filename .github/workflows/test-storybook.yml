@@ -21,7 +21,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "multithreaded"]'
     outputs:
       pr_has_errors:
         description: "Boolean indicating if the PR branch has Storybook test errors."
@@ -46,7 +46,7 @@ jobs:
     if: ${{ inputs.target_branch_to_compare != '' }}
     name: Test Target Branch Stories
     needs: [lint] # Ensure linting passes before running tests
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       total: ${{ steps.normalise-target.outputs.total }}
       passed: ${{ steps.normalise-target.outputs.passed }}
@@ -126,7 +126,7 @@ jobs:
   test-pr-branch-storybook:
     name: Test PR Branch Stories
     needs: [lint]
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       has_errors: ${{ steps.run-tests-pr.outcome == 'failure' || steps.normalise-pr.outputs.has_failures == 'true' }}
       failing_stories_json: ${{ steps.normalise-pr.outputs.failing_items_json }}
@@ -243,7 +243,7 @@ jobs:
 
   check-storybook-results:
     name: Check Storybook Results & Regressions
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     needs: [test-pr-branch-storybook, compare-results, perform-regression-analysis]
     if: always() # Always run to give a final status
     steps:
