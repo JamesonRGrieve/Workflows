@@ -6,7 +6,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: '["self-hosted", "multithreaded"]'
+        default: '["self-hosted", "singlethreaded"]'
     outputs:
       auto_formatted:
         description: "Whether Black auto-formatted files and pushed changes."

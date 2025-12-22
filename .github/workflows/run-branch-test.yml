@@ -16,7 +16,7 @@ on:
         description: "Runner label."
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "multithreaded"]'
       parallel_workers:
         description: "Number of parallel pytest workers. Use 'auto' for CPU count."
         required: false
@@ -38,7 +38,7 @@ on:
 jobs:
   # Detect which test frameworks are present
   detect-frameworks:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       has_pytest: ${{ steps.detect.outputs.has_pytest }}
       # Future: has_jest, has_xunit, etc.
@@ -74,7 +74,7 @@ jobs:
   test-target:
     needs: detect-frameworks
     if: needs.detect-frameworks.outputs.has_pytest == 'true'
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       total: ${{ steps.results.outputs.total }}
       passed: ${{ steps.results.outputs.passed }}
@@ -570,7 +570,7 @@ jobs:
     if: |
       always() &&
       (needs.compare.outputs.has_regressions == 'true' || needs.compare.result == 'failure')
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
       - name: Send notification
         env:

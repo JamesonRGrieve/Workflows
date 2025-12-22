@@ -23,11 +23,11 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: '["ubuntu-latest"]'
 jobs:
   build-and-push-ghcr:
     name: Build and Push Docker Image to GHCR
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     permissions:
       contents: read # To checkout the repository
       packages: write # To push packages to GHCR

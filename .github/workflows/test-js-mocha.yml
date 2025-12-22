@@ -40,7 +40,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "multithreaded"]'
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "Discord Webhook URL for failure notifications. If not provided, notifications are skipped."
@@ -82,7 +82,7 @@ on:
 
 jobs:
   test-source-branch:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
       passed: ${{ steps.extract-results.outputs.passed }}
@@ -439,7 +439,7 @@ jobs:
           if-no-files-found: ignore
 
   test-target-branch:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       total: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.total || steps.extract-results.outputs.total }}
       passed: ${{ steps.check-collection.outputs.has_collection_errors == 'true' && steps.set-error-outputs.outputs.passed || steps.extract-results.outputs.passed }}
@@ -869,7 +869,7 @@ jobs:
         needs.compare-results.result == 'failure' ||
         needs.perform-regression-analysis.outputs.has_regressions == 'true'
       )
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       message_body: ${{ steps.construct_notification.outputs.message_body_out }}
       ping_user_ids: ${{ steps.construct_notification.outputs.ping_user_ids_out }}

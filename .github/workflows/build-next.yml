@@ -11,7 +11,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "singlethreaded"]'
 jobs:
   lint:
     uses: ./.github/workflows/test-ts-lint.yml
@@ -21,7 +21,7 @@ jobs:
       lint_command: "npm run lint"
       fix_command: "npm run lint-fix"
   build-baremetal:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     name: Build / Baremetal
     needs: lint
     steps:

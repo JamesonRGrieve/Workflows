@@ -17,7 +17,7 @@ on:
         description: "Runner label for the test job."
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "multithreaded"]'
       artifact_name:
         description: "Name for the test results artifact."
         required: true
@@ -64,7 +64,7 @@ on:
 
 jobs:
   test:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       total: ${{ steps.extract-results.outputs.total }}
       passed: ${{ steps.extract-results.outputs.passed }}

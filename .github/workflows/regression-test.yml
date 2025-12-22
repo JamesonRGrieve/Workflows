@@ -7,7 +7,7 @@ on:
         description: "Runner label for the regression analysis job."
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: '["ubuntu-latest"]'
       baseline_label:
         description: "Display name for the baseline (target) test results."
         required: true
@@ -129,7 +129,7 @@ on:
 
 jobs:
   regression-analysis:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       has_regressions: ${{ steps.analyze.outputs.has_regressions }}
       regression_count: ${{ steps.analyze.outputs.regression_count }}

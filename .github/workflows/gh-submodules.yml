@@ -15,11 +15,11 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "singlethreaded"]'
 
 jobs:
   manage-submodules:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     name: Manage Submodules
     permissions:
       contents: write

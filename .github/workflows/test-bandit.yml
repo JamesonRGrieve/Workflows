@@ -11,7 +11,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: '["ubuntu-latest"]'
     outputs:
       bandit_issues_json:
         description: "JSON output of Bandit issues on PR branch"
@@ -21,7 +21,7 @@ jobs:
   # Job 1: Run Bandit on the PR branch
   run-bandit:
     name: Run Bandit on PR Branch & Extract Results
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       bandit_issues_json: ${{ steps.extract-pr.outputs.BANDIT_JSON }}
     steps:
@@ -63,7 +63,7 @@ jobs:
   # Job 2: Run Bandit on the target branch for comparison
   run-bandit-on-target:
     name: Run Bandit on Target Branch
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       bandit_target_json: ${{ steps.extract-target.outputs.TARGET_JSON }}
     steps:
@@ -106,7 +106,7 @@ jobs:
   # Job 3: Compare the PR results against the target to detect regressions
   compare-bandit:
     name: Compare Bandit Issues (Regression Analysis)
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     needs: [run-bandit, run-bandit-on-target]
     steps:
       - name: Compare JSON
