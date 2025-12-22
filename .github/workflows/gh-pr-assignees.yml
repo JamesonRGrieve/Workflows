@@ -20,7 +20,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "singlethreaded"]'
     secrets:
       gh_token:
         description: "GitHub token with permissions to read repo data and write to PRs (assign users)."
@@ -29,7 +29,7 @@ on:
 jobs:
   assign_commit_authors:
     name: Assign Commit Authors
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
       - name: Get PR Commit Author Logins
         id: get_authors

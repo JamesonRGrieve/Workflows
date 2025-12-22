@@ -6,7 +6,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "multithreaded"]'
     outputs:
       auto_formatted:
         description: "Whether Black auto-formatted files and pushed changes."
@@ -14,7 +14,7 @@ on:
 
 jobs:
   lint:
-    runs-on: self-hosted
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     name: Python Black Lint Check
     outputs:
       auto_formatted: ${{ steps.push-changes.outputs.pushed }}

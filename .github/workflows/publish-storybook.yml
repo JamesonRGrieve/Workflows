@@ -31,7 +31,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "singlethreaded"]'
 permissions:
   contents: read # To checkout the repository
   pages: write # To deploy to GitHub Pages
@@ -40,7 +40,7 @@ permissions:
 jobs:
   build-and-deploy-storybook:
     name: Build and Deploy Storybook
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}

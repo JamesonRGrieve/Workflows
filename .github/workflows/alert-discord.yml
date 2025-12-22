@@ -25,7 +25,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "singlethreaded"]'
     secrets:
       DISCORD_WEBHOOK_URL:
         description: "The Discord Webhook URL."
@@ -36,7 +36,7 @@ on:
 
 jobs:
   send-discord-alert:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     name: Send Alert to Discord
     steps:
       # This step assumes artifacts are already in the workspace (e.g., from a previous job or checked out code).

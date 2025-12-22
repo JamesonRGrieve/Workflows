@@ -10,7 +10,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "multithreaded"]'
     secrets:
       PAT_TOKEN:
         description: "Personal Access Token for cloning/pushing to downstream repos and API calls."
@@ -22,7 +22,7 @@ on:
 jobs:
   stage-downstream:
     name: Stage to Downstream Repositories
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     permissions:
       contents: write # To checkout repository and push changes to downstream repos
       pull-requests: write # To create pull requests in downstream repos
@@ -223,7 +223,7 @@ jobs:
 
   check-downstream-prs:
     needs: stage-downstream
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
       - name: Download PR data
         uses: actions/download-artifact@v4
