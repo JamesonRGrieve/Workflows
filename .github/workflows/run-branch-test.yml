@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ""
+      use_target_cache:
+        description: "Whether to use caching for target branch test results. When false, always runs fresh tests."
+        required: false
+        type: boolean
+        default: false
     secrets:
       DISCORD_WEBHOOK_URL:
         required: false
@@ -93,6 +98,7 @@ jobs:
       # Define cache keys
       - name: Set cache keys
         id: cache-keys
+        if: inputs.use_target_cache
         run: |
           # Version bump forces cache invalidation when extraction logic changes
           CACHE_VERSION="v4"
@@ -104,6 +110,7 @@ jobs:
       # Try to restore complete results first
       - name: Check for complete cache
         id: cache-complete
+        if: inputs.use_target_cache
         uses: actions/cache/restore@v4
         with:
           path: cached_target
@@ -112,7 +119,7 @@ jobs:
       # If no complete cache, check for any pending cache (someone else is running)
       - name: Check for pending cache
         id: cache-pending
-        if: steps.cache-complete.outputs.cache-hit != 'true'
+        if: inputs.use_target_cache && steps.cache-complete.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
         with:
           path: cached_pending
@@ -123,7 +130,10 @@ jobs:
       - name: Determine initial status
         id: initial-status
         run: |
-          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+          if [ "${{ inputs.use_target_cache }}" != "true" ]; then
+            echo "status=disabled" >> $GITHUB_OUTPUT
+            echo "🔄 Cache disabled - will run fresh tests"
+          elif [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
             echo "status=complete" >> $GITHUB_OUTPUT
             echo "✅ Found complete cache - will use it"
           elif [ "${{ steps.cache-pending.outputs.cache-hit }}" == "true" ]; then
@@ -136,7 +146,7 @@ jobs:
 
       # If cache miss, immediately save a pending marker so others know to wait
       - name: Create pending marker
-        if: steps.initial-status.outputs.status == 'miss'
+        if: inputs.use_target_cache && steps.initial-status.outputs.status == 'miss'
         run: |
           mkdir -p cached_pending_marker
           echo "pending" > cached_pending_marker/status
@@ -144,7 +154,7 @@ jobs:
           echo "run_id=${{ github.run_id }}" >> cached_pending_marker/status
 
       - name: Save pending marker
-        if: steps.initial-status.outputs.status == 'miss'
+        if: inputs.use_target_cache && steps.initial-status.outputs.status == 'miss'
         uses: actions/cache/save@v4
         with:
           path: cached_pending_marker
@@ -153,7 +163,7 @@ jobs:
       # If pending found, poll for complete cache with exponential backoff
       - name: Poll for complete cache
         id: poll-cache
-        if: steps.initial-status.outputs.status == 'pending'
+        if: inputs.use_target_cache && steps.initial-status.outputs.status == 'pending'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -191,7 +201,7 @@ jobs:
       # Restore complete cache after polling found it
       - name: Restore cache after poll
         id: cache-after-poll
-        if: steps.poll-cache.outputs.found == 'true'
+        if: inputs.use_target_cache && steps.poll-cache.outputs.found == 'true'
         uses: actions/cache/restore@v4
         with:
           path: cached_target
@@ -200,7 +210,10 @@ jobs:
       - name: Determine final status
         id: final-status
         run: |
-          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+          if [ "${{ inputs.use_target_cache }}" != "true" ]; then
+            echo "cache_hit=false" >> $GITHUB_OUTPUT
+            echo "🔄 Cache disabled - running fresh tests"
+          elif [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
             echo "cache_hit=true" >> $GITHUB_OUTPUT
             echo "✅ Using complete cache (found immediately)"
           elif [ "${{ steps.cache-after-poll.outputs.cache-hit }}" == "true" ]; then
@@ -213,7 +226,7 @@ jobs:
 
       - name: Load cached results
         id: load-cache
-        if: steps.final-status.outputs.cache_hit == 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit == 'true'
         run: |
           echo "✅ Loading cached target results (skipping test run)"
           if [ -f cached_target/outputs.env ]; then
@@ -221,7 +234,7 @@ jobs:
           fi
 
       - name: Upload cached artifact
-        if: steps.final-status.outputs.cache_hit == 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
@@ -462,7 +475,7 @@ jobs:
           "
 
       - name: Save results to cache
-        if: steps.final-status.outputs.cache_hit != 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit != 'true'
         run: |
           echo "💾 Saving results to cache..."
           mkdir -p cached_target
@@ -497,7 +510,7 @@ jobs:
 
       # Save complete results so other PRs can find it
       - name: Upload to cache
-        if: steps.final-status.outputs.cache_hit != 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: cached_target
