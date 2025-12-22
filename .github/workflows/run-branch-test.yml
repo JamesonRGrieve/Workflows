@@ -309,10 +309,21 @@ jobs:
           steps.final-status.outputs.cache_hit != 'true' &&
           steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          echo "🧪 Running tests with ${{ inputs.parallel_workers }} workers..."
+          # Determine worker count based on input or runner type
+          WORKERS="${{ inputs.parallel_workers }}"
+          if [ -z "$WORKERS" ]; then
+            # Auto-detect based on runner type
+            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
+              WORKERS="6"
+            else
+              WORKERS="1"
+            fi
+          fi
+          echo "🧪 Running tests with $WORKERS workers..."
+
           PARALLEL_FLAG=""
-          if [ "${{ inputs.parallel_workers }}" != "1" ]; then
-            PARALLEL_FLAG="-n ${{ inputs.parallel_workers }}"
+          if [ "$WORKERS" != "1" ]; then
+            PARALLEL_FLAG="-n $WORKERS"
           fi
 
           # Run pytest and capture exit code
