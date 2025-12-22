@@ -27,11 +27,11 @@ on:
       runs_on:
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: '["ubuntu-latest"]'
 
 jobs:
   sync:
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
       - name: Checkout source repo (self)
         uses: actions/checkout@v4

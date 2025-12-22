@@ -26,7 +26,7 @@ on:
       runs_on:
         required: false
         type: string
-        default: "self-hosted"
+        default: '["self-hosted", "singlethreaded"]'
     secrets:
       NPM_TOKEN:
         description: "NPM authentication token"
@@ -35,7 +35,7 @@ on:
 jobs:
   build-and-publish:
     name: Build and Publish to npm
-    runs-on: ${{ inputs.runs_on }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
