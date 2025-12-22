@@ -18,10 +18,10 @@ on:
         type: string
         default: '["self-hosted", "multithreaded"]'
       parallel_workers:
-        description: "Number of parallel pytest workers. Use 'auto' for CPU count."
+        description: "Number of parallel pytest workers. Leave empty for auto-detect (6 for multithreaded, 1 for singlethreaded). Use 'auto' for CPU count (caution: detects host CPUs)."
         required: false
         type: string
-        default: "auto"
+        default: ""
     secrets:
       DISCORD_WEBHOOK_URL:
         required: false

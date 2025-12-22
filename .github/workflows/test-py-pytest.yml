@@ -23,10 +23,10 @@ on:
         required: true
         type: string
       parallel_workers:
-        description: "Number of parallel workers for pytest-xdist. Use 'auto' for CPU count, or a number. Set to '1' to disable."
+        description: "Number of parallel workers for pytest-xdist. Leave empty for auto-detect based on runner (6 for multithreaded, 1 for singlethreaded). Use 'auto' for CPU count (caution: detects host CPUs, not container), or a number."
         required: false
         type: string
-        default: "auto"
+        default: ""
     outputs:
       total:
         description: "Total number of tests"
@@ -152,10 +152,21 @@ jobs:
         continue-on-error: true
         if: steps.check-collection.outputs.has_collection_errors != 'true'
         run: |
-          echo "Running tests with ${{ inputs.parallel_workers }} workers..."
+          # Determine worker count based on input or runner type
+          WORKERS="${{ inputs.parallel_workers }}"
+          if [ -z "$WORKERS" ]; then
+            # Auto-detect based on runner type
+            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
+              WORKERS="6"
+            else
+              WORKERS="1"
+            fi
+          fi
+          echo "Running tests with $WORKERS workers..."
+
           PARALLEL_FLAG=""
-          if [ "${{ inputs.parallel_workers }}" != "1" ]; then
-            PARALLEL_FLAG="-n ${{ inputs.parallel_workers }}"
+          if [ "$WORKERS" != "1" ]; then
+            PARALLEL_FLAG="-n $WORKERS"
           fi
 
           # Run pytest and capture exit code
