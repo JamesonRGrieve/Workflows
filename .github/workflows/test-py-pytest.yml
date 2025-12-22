@@ -23,10 +23,10 @@ on:
         required: true
         type: string
       parallel_workers:
-        description: "Number of parallel workers for pytest-xdist. Use 'auto' for CPU count, or a number. Set to '1' to disable."
+        description: "Number of parallel workers for pytest-xdist. Use 'auto' for CPU count (caution: detects host CPUs, not container), or a number. Set to '1' to disable."
         required: false
         type: string
-        default: "auto"
+        default: "4"
     outputs:
       total:
         description: "Total number of tests"
