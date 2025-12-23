@@ -7,18 +7,51 @@ on:
         description: "Target branch to compare against (e.g., main)."
         required: true
         type: string
+      # Python/pytest options
       python-version:
         description: "Python version for pytest."
         required: false
         type: string
         default: "3.10"
+      # C++/CMake options
+      cmake-version:
+        description: "CMake version for C++ tests."
+        required: false
+        type: string
+        default: "3.28"
+      cpp-compiler:
+        description: "C++ compiler (gcc, clang). Auto-detects if empty."
+        required: false
+        type: string
+        default: ""
+      cpp-build-type:
+        description: "CMake build type (Debug, Release, RelWithDebInfo, MinSizeRel)."
+        required: false
+        type: string
+        default: "Release"
+      cpp-build-dir:
+        description: "Build directory for C++ projects."
+        required: false
+        type: string
+        default: "build"
+      cpp-cmake-args:
+        description: "Additional CMake configuration arguments."
+        required: false
+        type: string
+        default: ""
+      cpp-test-args:
+        description: "Additional CTest arguments."
+        required: false
+        type: string
+        default: ""
+      # Common options
       runs_on:
         description: "Runner label."
         required: false
         type: string
         default: '["self-hosted", "multithreaded"]'
       parallel_workers:
-        description: "Number of parallel pytest workers. Leave empty for auto-detect (6 for multithreaded, 1 for singlethreaded). Use 'auto' for CPU count (caution: detects host CPUs)."
+        description: "Number of parallel workers. Leave empty for auto-detect (6 for multithreaded, 1 for singlethreaded). Use 'auto' for CPU count."
         required: false
         type: string
         default: ""
@@ -34,11 +67,17 @@ on:
         required: false
     outputs:
       has_regressions:
-        description: "Whether regressions were detected"
+        description: "Whether regressions were detected (pytest)"
         value: ${{ jobs.compare.outputs.has_regressions }}
       regression_count:
-        description: "Number of regressions"
+        description: "Number of regressions (pytest)"
         value: ${{ jobs.compare.outputs.regression_count }}
+      cpp_has_regressions:
+        description: "Whether regressions were detected (C++)"
+        value: ${{ jobs.compare-cpp.outputs.has_regressions }}
+      cpp_regression_count:
+        description: "Number of regressions (C++)"
+        value: ${{ jobs.compare-cpp.outputs.regression_count }}
 
 jobs:
   # Detect which test frameworks are present
@@ -46,7 +85,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       has_pytest: ${{ steps.detect.outputs.has_pytest }}
-      # Future: has_jest, has_xunit, etc.
+      has_cpp: ${{ steps.detect.outputs.has_cpp }}
     steps:
       - uses: actions/checkout@v4.2.2
       - name: Detect test frameworks
@@ -59,7 +98,25 @@ jobs:
           else
             echo "has_pytest=false" >> $GITHUB_OUTPUT
           fi
-          # Future: Add jest, xunit, etc. detection
+
+          # Detect C++ with CMake and tests
+          HAS_CPP="false"
+          if [ -f "CMakeLists.txt" ]; then
+            # Check for test-related CMake content
+            if grep -rqE "(enable_testing|add_test|gtest|catch|boost.*test)" CMakeLists.txt 2>/dev/null || \
+               find . -name "CMakeLists.txt" -exec grep -lE "(enable_testing|add_test|gtest|catch)" {} \; 2>/dev/null | head -1 | grep -q .; then
+              HAS_CPP="true"
+              echo "✅ Detected: C++ (CMake with tests)"
+            fi
+          fi
+          # Check for test source files
+          if [ "$HAS_CPP" = "false" ]; then
+            if find . \( -name "*_test.cpp" -o -name "*_test.cc" -o -name "test_*.cpp" -o -name "test_*.cc" \) 2>/dev/null | head -1 | grep -q .; then
+              HAS_CPP="true"
+              echo "✅ Detected: C++ test files"
+            fi
+          fi
+          echo "has_cpp=$HAS_CPP" >> $GITHUB_OUTPUT
 
   # Test source branch (always fresh, no caching)
   test-source:
@@ -611,6 +668,98 @@ jobs:
           MSG+="Source: ${{ needs.test-source.outputs.passed }}/${{ needs.test-source.outputs.total }}\n"
           MSG+="Target: ${{ needs.test-target.outputs.passed }}/${{ needs.test-target.outputs.total }}\n"
           MSG+="Regressions: ${{ needs.compare.outputs.regression_count || '?' }}\n\n"
+          MSG+="[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"content\": \"$(echo -e "$MSG")\"}" \
+            "$WEBHOOK" || true
+
+  # ============================================
+  # C++ Tests (GTest/CTest)
+  # ============================================
+
+  # Test C++ source branch
+  test-source-cpp:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp == 'true'
+    uses: ./.github/workflows/test-cpp-gtest.yml
+    with:
+      ref: ""  # Default checkout = PR branch
+      cmake-version: ${{ inputs.cmake-version }}
+      compiler: ${{ inputs.cpp-compiler }}
+      build-type: ${{ inputs.cpp-build-type }}
+      build-dir: ${{ inputs.cpp-build-dir }}
+      cmake-args: ${{ inputs.cpp-cmake-args }}
+      test-args: ${{ inputs.cpp-test-args }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Test C++ target branch
+  test-target-cpp:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp == 'true'
+    uses: ./.github/workflows/test-cpp-gtest.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      cmake-version: ${{ inputs.cmake-version }}
+      compiler: ${{ inputs.cpp-compiler }}
+      build-type: ${{ inputs.cpp-build-type }}
+      build-dir: ${{ inputs.cpp-build-dir }}
+      cmake-args: ${{ inputs.cpp-cmake-args }}
+      test-args: ${{ inputs.cpp-test-args }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Compare C++ results
+  compare-cpp:
+    needs: [test-source-cpp, test-target-cpp]
+    if: always() && needs.test-source-cpp.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.test-target-cpp.outputs.passed }}
+      baseline_total: ${{ needs.test-target-cpp.outputs.total }}
+      baseline_percentage: ${{ needs.test-target-cpp.outputs.percentage }}
+      current_passed: ${{ needs.test-source-cpp.outputs.passed }}
+      current_total: ${{ needs.test-source-cpp.outputs.total }}
+      current_percentage: ${{ needs.test-source-cpp.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.test-target-cpp.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.test-target-cpp.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.test-source-cpp.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.test-source-cpp.outputs.no_tests_found }}
+      artifact_name: regression_cpp_${{ github.event.pull_request.number || github.run_id }}
+
+  # Notify on C++ regressions
+  notify-cpp:
+    needs: [test-source-cpp, test-target-cpp, compare-cpp]
+    if: |
+      always() &&
+      (needs.compare-cpp.outputs.has_regressions == 'true' || needs.compare-cpp.result == 'failure')
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    steps:
+      - name: Send notification
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "No Discord webhook configured, skipping notification"
+            exit 0
+          fi
+
+          MSG="**C++ Test Regression Alert**\n"
+          MSG+="PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}\n"
+          MSG+="\`${{ github.head_ref }}\` → \`${{ inputs.target_branch }}\`\n\n"
+          MSG+="Source: ${{ needs.test-source-cpp.outputs.passed }}/${{ needs.test-source-cpp.outputs.total }}\n"
+          MSG+="Target: ${{ needs.test-target-cpp.outputs.passed }}/${{ needs.test-target-cpp.outputs.total }}\n"
+          MSG+="Regressions: ${{ needs.compare-cpp.outputs.regression_count || '?' }}\n\n"
           MSG+="[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
           curl -s -H "Content-Type: application/json" \
