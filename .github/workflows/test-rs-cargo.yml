@@ -167,79 +167,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          cgroup_auto_workers() {
-            local n=""
-
-            # cgroup v2: /sys/fs/cgroup/cpu.max => "<quota> <period>" or "max <period>"
-            if [ -f /sys/fs/cgroup/cpu.max ]; then
-              local quota period
-              quota="$(awk '{print $1}' /sys/fs/cgroup/cpu.max)"
-              period="$(awk '{print $2}' /sys/fs/cgroup/cpu.max)"
-              if [ -n "$quota" ] && [ -n "$period" ] && [ "$quota" != "max" ] && [ "$period" != "0" ]; then
-                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
-              fi
-            fi
-
-            # cgroup v1: cpu.cfs_quota_us / cpu.cfs_period_us
-            if [ -z "$n" ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
-              local quota period
-              quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"
-              period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
-              if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then
-                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
-              fi
-            fi
-
-            # cpuset fallback (v2: /sys/fs/cgroup/cpuset.cpus ; v1: /sys/fs/cgroup/cpuset/cpuset.cpus)
-            if [ -z "$n" ]; then
-              local f=""
-              if [ -f /sys/fs/cgroup/cpuset.cpus ]; then
-                f="/sys/fs/cgroup/cpuset.cpus"
-              elif [ -f /sys/fs/cgroup/cpuset/cpuset.cpus ]; then
-                f="/sys/fs/cgroup/cpuset/cpuset.cpus"
-              fi
-
-              if [ -n "$f" ]; then
-                local spec
-                spec="$(cat "$f" | tr -d '[:space:]')"
-                if [ -n "$spec" ]; then
-                  local count=0
-                  IFS=',' read -r -a parts <<< "$spec"
-                  for p in "${parts[@]}"; do
-                    if [[ "$p" == *-* ]]; then
-                      local a="${p%%-*}"
-                      local b="${p##*-}"
-                      if [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$b" -ge "$a" ]]; then
-                        count=$((count + b - a + 1))
-                      fi
-                    elif [[ "$p" =~ ^[0-9]+$ ]]; then
-                      count=$((count + 1))
-                    fi
-                  done
-                  if [ "$count" -gt 0 ]; then
-                    n="$count"
-                  fi
-                fi
-              fi
-            fi
-
-            if [ -z "$n" ] || [ "$n" -lt 1 ] 2>/dev/null; then
-              n="1"
-            fi
-
-            echo "$n"
-          }
-
-          WORKERS="${{ inputs.parallel_workers }}"
-          if [ -z "$WORKERS" ]; then
-            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
-              WORKERS="6"
-            else
-              WORKERS="1"
-            fi
-          elif [ "$WORKERS" = "auto" ]; then
-            WORKERS="$(cgroup_auto_workers)"
-          fi
+          # Source shared worker calculation script
+          source "$GITHUB_WORKSPACE/.github/scripts/cgroup_workers.sh"
+          WORKERS=$(determine_workers "${{ inputs.parallel_workers }}" '${{ inputs.runs_on }}')
 
           echo "Running tests with $WORKERS threads..."
 
