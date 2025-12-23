@@ -1,130 +1,220 @@
 name: Reusable Bandit Security Check with Regression Detection
 
-# This reusable workflow is triggered by other workflows using 'workflow_call'
 on:
   workflow_call:
     inputs:
-      target_branch_to_compare:
-        description: "Target branch to compare against (e.g., main)"
+      ref:
+        description: "Git ref to checkout and test. Leave empty for default checkout."
+        required: false
+        type: string
+        default: ""
+      target_branch:
+        description: "Target branch to compare against for regression detection (e.g., main)"
         required: true
         type: string
+      python-version:
+        description: "Python version to use for Bandit."
+        required: false
+        type: string
+        default: "3.10"
       runs_on:
+        description: "Runner label for the jobs."
         required: false
         type: string
         default: '["ubuntu-latest"]'
+      artifact_name:
+        description: "Base name for the security scan artifacts."
+        required: false
+        type: string
+        default: "bandit-results"
+      severity_level:
+        description: "Minimum severity level to report (-l, -ll, or -lll). Default -lll (high only)."
+        required: false
+        type: string
+        default: "-lll"
     outputs:
+      pr_issues_count:
+        description: "Number of issues found on PR branch"
+        value: ${{ jobs.run-bandit-pr.outputs.issues_count }}
+      target_issues_count:
+        description: "Number of issues found on target branch"
+        value: ${{ jobs.run-bandit-target.outputs.issues_count }}
+      new_issues_count:
+        description: "Number of new issues introduced in PR"
+        value: ${{ jobs.compare-results.outputs.new_issues_count }}
+      resolved_issues_count:
+        description: "Number of issues resolved in PR"
+        value: ${{ jobs.compare-results.outputs.resolved_issues_count }}
+      has_regressions:
+        description: "Whether new security issues were introduced"
+        value: ${{ jobs.compare-results.outputs.has_regressions }}
       bandit_issues_json:
         description: "JSON output of Bandit issues on PR branch"
-        value: ${{ jobs.run-bandit.outputs.bandit_issues_json }}
+        value: ${{ jobs.run-bandit-pr.outputs.bandit_issues_json }}
 
 jobs:
   # Job 1: Run Bandit on the PR branch
-  run-bandit:
-    name: Run Bandit on PR Branch & Extract Results
+  run-bandit-pr:
+    name: Run Bandit on PR Branch
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
-      bandit_issues_json: ${{ steps.extract-pr.outputs.BANDIT_JSON }}
+      bandit_issues_json: ${{ steps.extract-results.outputs.bandit_json }}
+      issues_count: ${{ steps.extract-results.outputs.issues_count }}
     steps:
-      # Step 1: Checkout the current pull request code
       - name: Checkout PR Branch
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@v4.2.2
         with:
+          submodules: "recursive"
+          ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
 
-      # Step 2: Set up Python 3.10 environment
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.3.0
         with:
-          python-version: "3.10"
+          python-version: "${{ inputs.python-version }}"
 
-      # Step 3: Install Bandit (Python security scanner)
       - name: Install Bandit
-        run: pip install bandit
-
-      # Step 4: Run Bandit and output results to a file
-      - name: Run Bandit on PR Branch
         run: |
-          bandit -r . -lll -f json -o pr_bandit_output.json || true
+          python -m pip install --upgrade pip
+          pip install bandit
 
-      # Step 5: Upload the results as a GitHub Actions artifact (for debugging or reporting)
-      - name: Upload PR Artifact
+      - name: Run Bandit Security Scan
+        run: |
+          bandit -r . ${{ inputs.severity_level }} -f json -o bandit_output.json || true
+
+      - name: Extract Results
+        id: extract-results
+        run: |
+          if [ -f bandit_output.json ]; then
+            ISSUES_JSON=$(cat bandit_output.json | jq -c '.results')
+            ISSUES_COUNT=$(cat bandit_output.json | jq '.results | length')
+          else
+            ISSUES_JSON="[]"
+            ISSUES_COUNT=0
+          fi
+          echo "bandit_json=$ISSUES_JSON" >> "$GITHUB_OUTPUT"
+          echo "issues_count=$ISSUES_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Found $ISSUES_COUNT security issues on PR branch"
+
+      - name: Upload PR Branch Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pr_bandit_output
-          path: pr_bandit_output.json
-
-      # Step 6: Extract the raw issue list from the Bandit JSON output
-      - name: Extract PR Bandit JSON
-        id: extract-pr
-        run: |
-          CONTENT=$(cat pr_bandit_output.json | jq -c '.results')
-          echo "BANDIT_JSON=$CONTENT" >> $GITHUB_OUTPUT
+          name: ${{ inputs.artifact_name }}-pr
+          path: bandit_output.json
+          retention-days: 3
+          if-no-files-found: ignore
 
   # Job 2: Run Bandit on the target branch for comparison
-  run-bandit-on-target:
+  run-bandit-target:
     name: Run Bandit on Target Branch
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
-      bandit_target_json: ${{ steps.extract-target.outputs.TARGET_JSON }}
+      bandit_issues_json: ${{ steps.extract-results.outputs.bandit_json }}
+      issues_count: ${{ steps.extract-results.outputs.issues_count }}
     steps:
-      # Step 1: Checkout the base branch (e.g., main)
       - name: Checkout Target Branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
-          ref: ${{ inputs.target_branch_to_compare }}
+          submodules: "recursive"
+          ref: ${{ inputs.target_branch }}
           persist-credentials: false
 
-      # Step 2: Set up Python environment
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.3.0
         with:
-          python-version: "3.10"
+          python-version: "${{ inputs.python-version }}"
 
-      # Step 3: Install Bandit
       - name: Install Bandit
-        run: pip install bandit
-
-      # Step 4: Run Bandit and save output
-      - name: Run Bandit on Target Branch
         run: |
-          bandit -r . -lll -f json -o target_bandit_output.json || true
+          python -m pip install --upgrade pip
+          pip install bandit
 
-      # Step 5: Upload results from the target branch
-      - name: Upload Target Artifact
+      - name: Run Bandit Security Scan
+        run: |
+          bandit -r . ${{ inputs.severity_level }} -f json -o bandit_output.json || true
+
+      - name: Extract Results
+        id: extract-results
+        run: |
+          if [ -f bandit_output.json ]; then
+            ISSUES_JSON=$(cat bandit_output.json | jq -c '.results')
+            ISSUES_COUNT=$(cat bandit_output.json | jq '.results | length')
+          else
+            ISSUES_JSON="[]"
+            ISSUES_COUNT=0
+          fi
+          echo "bandit_json=$ISSUES_JSON" >> "$GITHUB_OUTPUT"
+          echo "issues_count=$ISSUES_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Found $ISSUES_COUNT security issues on target branch"
+
+      - name: Upload Target Branch Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: target_bandit_output
-          path: target_bandit_output.json
+          name: ${{ inputs.artifact_name }}-target
+          path: bandit_output.json
+          retention-days: 3
+          if-no-files-found: ignore
 
-      # Step 6: Extract raw issue list from the Bandit output
-      - name: Extract Target Bandit JSON
-        id: extract-target
-        run: |
-          CONTENT=$(cat target_bandit_output.json | jq -c '.results')
-          echo "TARGET_JSON=$CONTENT" >> $GITHUB_OUTPUT
-
-  # Job 3: Compare the PR results against the target to detect regressions
-  compare-bandit:
-    name: Compare Bandit Issues (Regression Analysis)
+  # Job 3: Compare results and detect regressions
+  compare-results:
+    name: Compare Results (Regression Detection)
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    needs: [run-bandit, run-bandit-on-target]
+    needs: [run-bandit-pr, run-bandit-target]
+    outputs:
+      new_issues_count: ${{ steps.compare.outputs.new_issues_count }}
+      resolved_issues_count: ${{ steps.compare.outputs.resolved_issues_count }}
+      has_regressions: ${{ steps.compare.outputs.has_regressions }}
     steps:
-      - name: Compare JSON
+      - name: Compare Bandit Results
+        id: compare
         run: |
           echo "Comparing Bandit results between PR and target branch..."
 
-          echo "${{ needs.run-bandit.outputs.bandit_issues_json }}" > pr.json
-          echo "${{ needs.run-bandit-on-target.outputs.bandit_target_json }}" > target.json
+          # Write issues to files for comparison
+          echo '${{ needs.run-bandit-pr.outputs.bandit_issues_json }}' > pr_issues.json
+          echo '${{ needs.run-bandit-target.outputs.bandit_issues_json }}' > target_issues.json
 
-          # Compare both JSON lists to find issues present in PR but not in target
-          NEW_ISSUES=$(jq -n --argfile pr pr.json --argfile base target.json '
-            $pr - $base | length')
+          # Calculate new issues (in PR but not in target)
+          NEW_ISSUES_COUNT=$(jq -n --argfile pr pr_issues.json --argfile base target_issues.json '
+            ($pr - $base) | length')
 
-          echo "New security issues introduced: $NEW_ISSUES"
+          # Calculate resolved issues (in target but not in PR)
+          RESOLVED_ISSUES_COUNT=$(jq -n --argfile pr pr_issues.json --argfile base target_issues.json '
+            ($base - $pr) | length')
 
-          if [ "$NEW_ISSUES" -gt 0 ]; then
-            echo "::error::New Bandit issues introduced in PR branch."
+          echo "new_issues_count=$NEW_ISSUES_COUNT" >> "$GITHUB_OUTPUT"
+          echo "resolved_issues_count=$RESOLVED_ISSUES_COUNT" >> "$GITHUB_OUTPUT"
+
+          echo "PR Issues: ${{ needs.run-bandit-pr.outputs.issues_count }}"
+          echo "Target Issues: ${{ needs.run-bandit-target.outputs.issues_count }}"
+          echo "New Issues Introduced: $NEW_ISSUES_COUNT"
+          echo "Issues Resolved: $RESOLVED_ISSUES_COUNT"
+
+          if [ "$NEW_ISSUES_COUNT" -gt 0 ]; then
+            echo "has_regressions=true" >> "$GITHUB_OUTPUT"
+            echo "::error::$NEW_ISSUES_COUNT new security issue(s) introduced in this PR"
+
+            # Show details of new issues
+            echo "New issues details:"
+            jq -n --argfile pr pr_issues.json --argfile base target_issues.json '
+              $pr - $base' | jq -r '.[] | "  - \(.test_id): \(.issue_text) (\(.filename):\(.line_number))"'
+
             exit 1
           else
+            echo "has_regressions=false" >> "$GITHUB_OUTPUT"
             echo "No new security issues introduced."
+            if [ "$RESOLVED_ISSUES_COUNT" -gt 0 ]; then
+              echo "::notice::$RESOLVED_ISSUES_COUNT security issue(s) were resolved in this PR"
+            fi
           fi
+
+      - name: Upload Comparison Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}-comparison
+          path: |
+            pr_issues.json
+            target_issues.json
+          retention-days: 3
+          if-no-files-found: ignore
