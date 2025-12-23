@@ -7,16 +7,50 @@ on:
         description: "Target branch to compare against (e.g., main)."
         required: true
         type: string
+      # Python/pytest options
       python-version:
         description: "Python version for pytest."
         required: false
         type: string
         default: "3.10"
+      # Node.js options for Jest/Mocha
       node-version:
         description: "Node.js version for Jest/Mocha."
         required: false
         type: string
         default: "18"
+      # C++/CMake options
+      cmake-version:
+        description: "CMake version for C++ tests."
+        required: false
+        type: string
+        default: "3.28"
+      cpp-compiler:
+        description: "C++ compiler (gcc, clang). Auto-detects if empty."
+        required: false
+        type: string
+        default: ""
+      cpp-build-type:
+        description: "CMake build type (Debug, Release, RelWithDebInfo, MinSizeRel)."
+        required: false
+        type: string
+        default: "Release"
+      cpp-build-dir:
+        description: "Build directory for C++ projects."
+        required: false
+        type: string
+        default: "build"
+      cpp-cmake-args:
+        description: "Additional CMake configuration arguments."
+        required: false
+        type: string
+        default: ""
+      cpp-test-args:
+        description: "Additional CTest arguments."
+        required: false
+        type: string
+        default: ""
+      # Common options
       runs_on:
         description: "Runner label."
         required: false
@@ -27,6 +61,12 @@ on:
         required: false
         type: string
         default: ""
+      use_target_cache:
+        description: "Whether to use caching for target branch test results. When false, always runs fresh tests."
+        required: false
+        type: boolean
+        default: false
+      # Jest options
       jest-command:
         description: "Base command used to invoke Jest."
         required: false
@@ -37,6 +77,7 @@ on:
         required: false
         type: string
         default: ""
+      # Mocha options
       mocha-command:
         description: "Base command used to invoke Mocha."
         required: false
@@ -64,6 +105,12 @@ on:
       regression_count:
         description: "Total number of regressions (all frameworks)"
         value: ${{ jobs.aggregate-results.outputs.regression_count }}
+      cpp_has_regressions:
+        description: "Whether regressions were detected (C++)"
+        value: ${{ jobs.cpp-compare.outputs.has_regressions }}
+      cpp_regression_count:
+        description: "Number of regressions (C++)"
+        value: ${{ jobs.cpp-compare.outputs.regression_count }}
 
 jobs:
   # Detect which test frameworks are present
@@ -73,6 +120,7 @@ jobs:
       has_pytest: ${{ steps.detect.outputs.has_pytest }}
       has_jest: ${{ steps.detect.outputs.has_jest }}
       has_mocha: ${{ steps.detect.outputs.has_mocha }}
+      has_cpp: ${{ steps.detect.outputs.has_cpp }}
     steps:
       - uses: actions/checkout@v4.2.2
       - name: Detect test frameworks
@@ -81,10 +129,29 @@ jobs:
           # Detect pytest
           if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "requirements.txt" ] || find . -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 | grep -q .; then
             echo "has_pytest=true" >> $GITHUB_OUTPUT
-            echo "Detected: pytest"
+            echo "✅ Detected: pytest"
           else
             echo "has_pytest=false" >> $GITHUB_OUTPUT
           fi
+
+          # Detect C++ with CMake and tests
+          HAS_CPP="false"
+          if [ -f "CMakeLists.txt" ]; then
+            # Check for test-related CMake content
+            if grep -rqE "(enable_testing|add_test|gtest|catch|boost.*test)" CMakeLists.txt 2>/dev/null || \
+               find . -name "CMakeLists.txt" -exec grep -lE "(enable_testing|add_test|gtest|catch)" {} \; 2>/dev/null | head -1 | grep -q .; then
+              HAS_CPP="true"
+              echo "✅ Detected: C++ (CMake with tests)"
+            fi
+          fi
+          # Check for test source files
+          if [ "$HAS_CPP" = "false" ]; then
+            if find . \( -name "*_test.cpp" -o -name "*_test.cc" -o -name "test_*.cpp" -o -name "test_*.cc" \) 2>/dev/null | head -1 | grep -q .; then
+              HAS_CPP="true"
+              echo "✅ Detected: C++ test files"
+            fi
+          fi
+          echo "has_cpp=$HAS_CPP" >> $GITHUB_OUTPUT
 
           # Detect Jest
           HAS_JEST="false"
@@ -104,7 +171,7 @@ jobs:
           fi
           echo "has_jest=$HAS_JEST" >> $GITHUB_OUTPUT
           if [ "$HAS_JEST" = "true" ]; then
-            echo "Detected: Jest"
+            echo "✅ Detected: Jest"
           fi
 
           # Detect Mocha
@@ -125,7 +192,7 @@ jobs:
           fi
           echo "has_mocha=$HAS_MOCHA" >> $GITHUB_OUTPUT
           if [ "$HAS_MOCHA" = "true" ]; then
-            echo "Detected: Mocha"
+            echo "✅ Detected: Mocha"
           fi
 
   # ==================== PYTEST ====================
@@ -290,9 +357,69 @@ jobs:
       current_no_tests_found: ${{ needs.mocha-source.outputs.no_tests_found }}
       artifact_name: regression_mocha_${{ github.event.pull_request.number || github.run_id }}
 
+  # ==================== C++ (GTest/CTest) ====================
+  # Test C++ source branch
+  cpp-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp == 'true'
+    uses: ./.github/workflows/test-cpp-gtest.yml
+    with:
+      ref: ""  # Default checkout = PR branch
+      cmake-version: ${{ inputs.cmake-version }}
+      compiler: ${{ inputs.cpp-compiler }}
+      build-type: ${{ inputs.cpp-build-type }}
+      build-dir: ${{ inputs.cpp-build-dir }}
+      cmake-args: ${{ inputs.cpp-cmake-args }}
+      test-args: ${{ inputs.cpp-test-args }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Test C++ target branch
+  cpp-target:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp == 'true'
+    uses: ./.github/workflows/test-cpp-gtest.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      cmake-version: ${{ inputs.cmake-version }}
+      compiler: ${{ inputs.cpp-compiler }}
+      build-type: ${{ inputs.cpp-build-type }}
+      build-dir: ${{ inputs.cpp-build-dir }}
+      cmake-args: ${{ inputs.cpp-cmake-args }}
+      test-args: ${{ inputs.cpp-test-args }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Compare C++ results
+  cpp-compare:
+    needs: [detect-frameworks, cpp-source, cpp-target]
+    if: always() && needs.detect-frameworks.outputs.has_cpp == 'true' && needs.cpp-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.cpp-target.outputs.passed }}
+      baseline_total: ${{ needs.cpp-target.outputs.total }}
+      baseline_percentage: ${{ needs.cpp-target.outputs.percentage }}
+      current_passed: ${{ needs.cpp-source.outputs.passed }}
+      current_total: ${{ needs.cpp-source.outputs.total }}
+      current_percentage: ${{ needs.cpp-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.cpp-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.cpp-target.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.cpp-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.cpp-source.outputs.no_tests_found }}
+      artifact_name: regression_cpp_${{ github.event.pull_request.number || github.run_id }}
+
   # ==================== AGGREGATE RESULTS ====================
   aggregate-results:
-    needs: [detect-frameworks, pytest-compare, jest-compare, mocha-compare]
+    needs: [detect-frameworks, pytest-compare, jest-compare, mocha-compare, cpp-compare]
     if: always()
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
@@ -335,13 +462,23 @@ jobs:
             fi
           fi
 
+          # Check C++
+          if [ "${{ needs.detect-frameworks.outputs.has_cpp }}" == "true" ]; then
+            CPP_REGRESSIONS="${{ needs.cpp-compare.outputs.regression_count || '0' }}"
+            if [ "${{ needs.cpp-compare.outputs.has_regressions }}" == "true" ]; then
+              HAS_REGRESSIONS="true"
+              TOTAL_REGRESSIONS=$((TOTAL_REGRESSIONS + CPP_REGRESSIONS))
+              echo "C++ regressions: $CPP_REGRESSIONS"
+            fi
+          fi
+
           echo "has_regressions=$HAS_REGRESSIONS" >> $GITHUB_OUTPUT
           echo "regression_count=$TOTAL_REGRESSIONS" >> $GITHUB_OUTPUT
           echo "Total regressions across all frameworks: $TOTAL_REGRESSIONS"
 
   # ==================== NOTIFICATIONS ====================
   notify:
-    needs: [detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, aggregate-results]
+    needs: [detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, cpp-source, cpp-target, cpp-compare, aggregate-results]
     if: always() && needs.aggregate-results.outputs.has_regressions == 'true'
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
@@ -356,7 +493,7 @@ jobs:
 
           MSG="**Test Regression Alert**\n"
           MSG+="PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}\n"
-          MSG+="\`${{ github.head_ref }}\` -> \`${{ inputs.target_branch }}\`\n\n"
+          MSG+="\`${{ github.head_ref }}\` → \`${{ inputs.target_branch }}\`\n\n"
 
           # Pytest results
           if [ "${{ needs.detect-frameworks.outputs.has_pytest }}" == "true" ]; then
@@ -387,6 +524,17 @@ jobs:
             MSG+="  Target: ${{ needs.mocha-target.outputs.passed }}/${{ needs.mocha-target.outputs.total }}\n"
             if [ "${{ needs.mocha-compare.outputs.has_regressions }}" == "true" ]; then
               MSG+="  Regressions: ${{ needs.mocha-compare.outputs.regression_count }}\n"
+            fi
+            MSG+="\n"
+          fi
+
+          # C++ results
+          if [ "${{ needs.detect-frameworks.outputs.has_cpp }}" == "true" ]; then
+            MSG+="**C++:**\n"
+            MSG+="  Source: ${{ needs.cpp-source.outputs.passed }}/${{ needs.cpp-source.outputs.total }}\n"
+            MSG+="  Target: ${{ needs.cpp-target.outputs.passed }}/${{ needs.cpp-target.outputs.total }}\n"
+            if [ "${{ needs.cpp-compare.outputs.has_regressions }}" == "true" ]; then
+              MSG+="  Regressions: ${{ needs.cpp-compare.outputs.regression_count }}\n"
             fi
             MSG+="\n"
           fi
