@@ -25,6 +25,12 @@ on:
         required: false
         type: string
         default: "stable"
+      # .NET options
+      dotnet-version:
+        description: ".NET SDK version for NUnit/xUnit tests."
+        required: false
+        type: string
+        default: "8.0.x"
       # C++/CMake options
       cmake-version:
         description: "CMake version for C++ tests."
@@ -99,6 +105,33 @@ on:
         required: false
         type: string
         default: "."
+      # Python unittest options
+      unittest-start-directory:
+        description: "Directory passed to unittest discovery."
+        required: false
+        type: string
+        default: "."
+      unittest-test-pattern:
+        description: "Pattern used by unittest discovery."
+        required: false
+        type: string
+        default: "test*.py"
+      # Storybook options
+      storybook-port:
+        description: "Port for Storybook server."
+        required: false
+        type: string
+        default: "6006"
+      storybook-start-command:
+        description: "Command to start Storybook server."
+        required: false
+        type: string
+        default: "npm run storybook"
+      storybook-test-command:
+        description: "Command to run Storybook tests."
+        required: false
+        type: string
+        default: "npm run storybook-test"
     secrets:
       DISCORD_WEBHOOK_URL:
         required: false
@@ -123,6 +156,30 @@ on:
       cpp_regression_count:
         description: "Number of regressions (C++)"
         value: ${{ jobs.cpp-compare.outputs.regression_count }}
+      nunit_has_regressions:
+        description: "Whether regressions were detected (NUnit)"
+        value: ${{ jobs.nunit-compare.outputs.has_regressions }}
+      nunit_regression_count:
+        description: "Number of regressions (NUnit)"
+        value: ${{ jobs.nunit-compare.outputs.regression_count }}
+      xunit_has_regressions:
+        description: "Whether regressions were detected (xUnit)"
+        value: ${{ jobs.xunit-compare.outputs.has_regressions }}
+      xunit_regression_count:
+        description: "Number of regressions (xUnit)"
+        value: ${{ jobs.xunit-compare.outputs.regression_count }}
+      unittest_has_regressions:
+        description: "Whether regressions were detected (unittest)"
+        value: ${{ jobs.unittest-compare.outputs.has_regressions }}
+      unittest_regression_count:
+        description: "Number of regressions (unittest)"
+        value: ${{ jobs.unittest-compare.outputs.regression_count }}
+      storybook_has_regressions:
+        description: "Whether regressions were detected (Storybook)"
+        value: ${{ jobs.storybook-compare.outputs.has_regressions }}
+      storybook_regression_count:
+        description: "Number of regressions (Storybook)"
+        value: ${{ jobs.storybook-compare.outputs.regression_count }}
 
 jobs:
   # Detect which test frameworks are present
@@ -134,6 +191,10 @@ jobs:
       has_mocha: ${{ steps.detect.outputs.has_mocha }}
       has_cargo: ${{ steps.detect.outputs.has_cargo }}
       has_cpp: ${{ steps.detect.outputs.has_cpp }}
+      has_nunit: ${{ steps.detect.outputs.has_nunit }}
+      has_xunit: ${{ steps.detect.outputs.has_xunit }}
+      has_unittest: ${{ steps.detect.outputs.has_unittest }}
+      has_storybook: ${{ steps.detect.outputs.has_storybook }}
     steps:
       - uses: actions/checkout@v4.2.2
       - name: Detect test frameworks
@@ -214,6 +275,67 @@ jobs:
           echo "has_mocha=$HAS_MOCHA" >> "$GITHUB_OUTPUT"
           if [ "$HAS_MOCHA" = "true" ]; then
             echo "✅ Detected: Mocha"
+          fi
+
+          # Detect NUnit (.NET)
+          HAS_NUNIT="false"
+          if find . -name "*.csproj" 2>/dev/null | head -1 | grep -q .; then
+            if grep -rq "NUnit" *.csproj 2>/dev/null || grep -rq "nunit" . --include="*.csproj" 2>/dev/null; then
+              HAS_NUNIT="true"
+            fi
+          fi
+          echo "has_nunit=$HAS_NUNIT" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_NUNIT" = "true" ]; then
+            echo "✅ Detected: NUnit (.NET)"
+          fi
+
+          # Detect xUnit (.NET)
+          HAS_XUNIT="false"
+          if find . -name "*.csproj" 2>/dev/null | head -1 | grep -q .; then
+            if grep -rq "xunit" . --include="*.csproj" 2>/dev/null; then
+              HAS_XUNIT="true"
+            fi
+          fi
+          echo "has_xunit=$HAS_XUNIT" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_XUNIT" = "true" ]; then
+            echo "✅ Detected: xUnit (.NET)"
+          fi
+
+          # Detect Python unittest (when pytest is not present)
+          HAS_UNITTEST="false"
+          if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || find . -name "test_*.py" 2>/dev/null | head -1 | grep -q .; then
+            # Only enable unittest if pytest is NOT detected (pytest is preferred)
+            if ! grep -q "pytest" requirements.txt 2>/dev/null && ! grep -q "pytest" pyproject.toml 2>/dev/null; then
+              # Check for unittest imports
+              if grep -rq "import unittest" . --include="*.py" 2>/dev/null || grep -rq "from unittest" . --include="*.py" 2>/dev/null; then
+                HAS_UNITTEST="true"
+              fi
+            fi
+          fi
+          echo "has_unittest=$HAS_UNITTEST" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_UNITTEST" = "true" ]; then
+            echo "✅ Detected: Python unittest"
+          fi
+
+          # Detect Storybook
+          HAS_STORYBOOK="false"
+          if [ -f "package.json" ]; then
+            if grep -q '"@storybook' package.json 2>/dev/null; then
+              # Check for storybook test runner
+              if grep -q '"@storybook/test-runner"' package.json 2>/dev/null || grep -q '"storybook-test"' package.json 2>/dev/null; then
+                HAS_STORYBOOK="true"
+              fi
+            fi
+            # Check for .storybook directory
+            if [ -d ".storybook" ]; then
+              if [ -f "package.json" ] && grep -q '"@storybook/test-runner"' package.json 2>/dev/null; then
+                HAS_STORYBOOK="true"
+              fi
+            fi
+          fi
+          echo "has_storybook=$HAS_STORYBOOK" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_STORYBOOK" = "true" ]; then
+            echo "✅ Detected: Storybook"
           fi
 
   # ==================== PYTEST ====================
@@ -488,9 +610,205 @@ jobs:
       current_no_tests_found: ${{ needs.cpp-source.outputs.no_tests_found }}
       artifact_name: regression_cpp_${{ github.event.pull_request.number || github.run_id }}
 
+  # ==================== NUNIT (.NET) ====================
+  nunit-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_nunit == 'true'
+    uses: ./.github/workflows/test-cs-nunit.yml
+    with:
+      ref: ""
+      dotnet-version: ${{ inputs.dotnet-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: nunit_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  nunit-target:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_nunit == 'true'
+    uses: ./.github/workflows/test-cs-nunit.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      dotnet-version: ${{ inputs.dotnet-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: nunit_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  nunit-compare:
+    needs: [detect-frameworks, nunit-source, nunit-target]
+    if: always() && needs.detect-frameworks.outputs.has_nunit == 'true' && needs.nunit-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: nunit_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: nunit_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.nunit-target.outputs.passed }}
+      baseline_total: ${{ needs.nunit-target.outputs.total }}
+      baseline_percentage: ${{ needs.nunit-target.outputs.percentage }}
+      current_passed: ${{ needs.nunit-source.outputs.passed }}
+      current_total: ${{ needs.nunit-source.outputs.total }}
+      current_percentage: ${{ needs.nunit-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.nunit-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.nunit-target.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.nunit-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.nunit-source.outputs.no_tests_found }}
+      artifact_name: regression_nunit_${{ github.event.pull_request.number || github.run_id }}
+
+  # ==================== XUNIT (.NET) ====================
+  xunit-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_xunit == 'true'
+    uses: ./.github/workflows/test-cs-xunit.yml
+    with:
+      ref: ""
+      dotnet-version: ${{ inputs.dotnet-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: xunit_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  xunit-target:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_xunit == 'true'
+    uses: ./.github/workflows/test-cs-xunit.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      dotnet-version: ${{ inputs.dotnet-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: xunit_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  xunit-compare:
+    needs: [detect-frameworks, xunit-source, xunit-target]
+    if: always() && needs.detect-frameworks.outputs.has_xunit == 'true' && needs.xunit-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: xunit_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: xunit_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.xunit-target.outputs.passed }}
+      baseline_total: ${{ needs.xunit-target.outputs.total }}
+      baseline_percentage: ${{ needs.xunit-target.outputs.percentage }}
+      current_passed: ${{ needs.xunit-source.outputs.passed }}
+      current_total: ${{ needs.xunit-source.outputs.total }}
+      current_percentage: ${{ needs.xunit-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.xunit-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.xunit-target.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.xunit-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.xunit-source.outputs.no_tests_found }}
+      artifact_name: regression_xunit_${{ github.event.pull_request.number || github.run_id }}
+
+  # ==================== PYTHON UNITTEST ====================
+  unittest-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_unittest == 'true'
+    uses: ./.github/workflows/test-py-unittest.yml
+    with:
+      ref: ""
+      python-version: ${{ inputs.python-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: unittest_source_${{ github.event.pull_request.number || github.run_id }}
+      start-directory: ${{ inputs.unittest-start-directory }}
+      test-pattern: ${{ inputs.unittest-test-pattern }}
+
+  unittest-target:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_unittest == 'true'
+    uses: ./.github/workflows/test-py-unittest.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      python-version: ${{ inputs.python-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: unittest_target_${{ github.event.pull_request.number || github.run_id }}
+      start-directory: ${{ inputs.unittest-start-directory }}
+      test-pattern: ${{ inputs.unittest-test-pattern }}
+
+  unittest-compare:
+    needs: [detect-frameworks, unittest-source, unittest-target]
+    if: always() && needs.detect-frameworks.outputs.has_unittest == 'true' && needs.unittest-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: unittest_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: unittest_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.unittest-target.outputs.passed }}
+      baseline_total: ${{ needs.unittest-target.outputs.total }}
+      baseline_percentage: ${{ needs.unittest-target.outputs.percentage }}
+      current_passed: ${{ needs.unittest-source.outputs.passed }}
+      current_total: ${{ needs.unittest-source.outputs.total }}
+      current_percentage: ${{ needs.unittest-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.unittest-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.unittest-target.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.unittest-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.unittest-source.outputs.no_tests_found }}
+      artifact_name: regression_unittest_${{ github.event.pull_request.number || github.run_id }}
+
+  # ==================== STORYBOOK ====================
+  storybook-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_storybook == 'true'
+    uses: ./.github/workflows/test-js-storybook.yml
+    with:
+      ref: ""
+      node-version: ${{ inputs.node-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: storybook_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+      storybook_port: ${{ inputs.storybook-port }}
+      storybook_start_command: ${{ inputs.storybook-start-command }}
+      storybook_test_command: ${{ inputs.storybook-test-command }}
+
+  storybook-target:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_storybook == 'true'
+    uses: ./.github/workflows/test-js-storybook.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      node-version: ${{ inputs.node-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: storybook_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+      storybook_port: ${{ inputs.storybook-port }}
+      storybook_start_command: ${{ inputs.storybook-start-command }}
+      storybook_test_command: ${{ inputs.storybook-test-command }}
+
+  storybook-compare:
+    needs: [detect-frameworks, storybook-source, storybook-target]
+    if: always() && needs.detect-frameworks.outputs.has_storybook == 'true' && needs.storybook-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: storybook_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: storybook_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.storybook-target.outputs.passed }}
+      baseline_total: ${{ needs.storybook-target.outputs.total }}
+      baseline_percentage: ${{ needs.storybook-target.outputs.percentage }}
+      current_passed: ${{ needs.storybook-source.outputs.passed }}
+      current_total: ${{ needs.storybook-source.outputs.total }}
+      current_percentage: ${{ needs.storybook-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.storybook-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.storybook-target.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.storybook-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.storybook-source.outputs.no_tests_found }}
+      artifact_name: regression_storybook_${{ github.event.pull_request.number || github.run_id }}
+
   # ==================== AGGREGATE RESULTS ====================
   aggregate-results:
-    needs: [detect-frameworks, pytest-compare, jest-compare, mocha-compare, cargo-compare, cpp-compare]
+    needs: [detect-frameworks, pytest-compare, jest-compare, mocha-compare, cargo-compare, cpp-compare, nunit-compare, xunit-compare, unittest-compare, storybook-compare]
     if: always()
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
@@ -553,13 +871,53 @@ jobs:
             fi
           fi
 
+          # Check NUnit
+          if [ "${{ needs.detect-frameworks.outputs.has_nunit }}" == "true" ]; then
+            NUNIT_REGRESSIONS="${{ needs.nunit-compare.outputs.regression_count || '0' }}"
+            if [ "${{ needs.nunit-compare.outputs.has_regressions }}" == "true" ]; then
+              HAS_REGRESSIONS="true"
+              TOTAL_REGRESSIONS=$((TOTAL_REGRESSIONS + NUNIT_REGRESSIONS))
+              echo "NUnit regressions: $NUNIT_REGRESSIONS"
+            fi
+          fi
+
+          # Check xUnit
+          if [ "${{ needs.detect-frameworks.outputs.has_xunit }}" == "true" ]; then
+            XUNIT_REGRESSIONS="${{ needs.xunit-compare.outputs.regression_count || '0' }}"
+            if [ "${{ needs.xunit-compare.outputs.has_regressions }}" == "true" ]; then
+              HAS_REGRESSIONS="true"
+              TOTAL_REGRESSIONS=$((TOTAL_REGRESSIONS + XUNIT_REGRESSIONS))
+              echo "xUnit regressions: $XUNIT_REGRESSIONS"
+            fi
+          fi
+
+          # Check Python unittest
+          if [ "${{ needs.detect-frameworks.outputs.has_unittest }}" == "true" ]; then
+            UNITTEST_REGRESSIONS="${{ needs.unittest-compare.outputs.regression_count || '0' }}"
+            if [ "${{ needs.unittest-compare.outputs.has_regressions }}" == "true" ]; then
+              HAS_REGRESSIONS="true"
+              TOTAL_REGRESSIONS=$((TOTAL_REGRESSIONS + UNITTEST_REGRESSIONS))
+              echo "Python unittest regressions: $UNITTEST_REGRESSIONS"
+            fi
+          fi
+
+          # Check Storybook
+          if [ "${{ needs.detect-frameworks.outputs.has_storybook }}" == "true" ]; then
+            STORYBOOK_REGRESSIONS="${{ needs.storybook-compare.outputs.regression_count || '0' }}"
+            if [ "${{ needs.storybook-compare.outputs.has_regressions }}" == "true" ]; then
+              HAS_REGRESSIONS="true"
+              TOTAL_REGRESSIONS=$((TOTAL_REGRESSIONS + STORYBOOK_REGRESSIONS))
+              echo "Storybook regressions: $STORYBOOK_REGRESSIONS"
+            fi
+          fi
+
           echo "has_regressions=$HAS_REGRESSIONS" >> "$GITHUB_OUTPUT"
           echo "regression_count=$TOTAL_REGRESSIONS" >> "$GITHUB_OUTPUT"
           echo "Total regressions across all frameworks: $TOTAL_REGRESSIONS"
 
   # ==================== NOTIFICATIONS ====================
   notify:
-    needs: [detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, cargo-source, cargo-target, cargo-compare, cpp-source, cpp-target, cpp-compare, aggregate-results]
+    needs: [detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, cargo-source, cargo-target, cargo-compare, cpp-source, cpp-target, cpp-compare, nunit-source, nunit-target, nunit-compare, xunit-source, xunit-target, xunit-compare, unittest-source, unittest-target, unittest-compare, storybook-source, storybook-target, storybook-compare, aggregate-results]
     if: always() && needs.aggregate-results.outputs.has_regressions == 'true'
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
@@ -627,6 +985,50 @@ jobs:
             MSG+="  Target: ${{ needs.cpp-target.outputs.passed }}/${{ needs.cpp-target.outputs.total }}\n"
             if [ "${{ needs.cpp-compare.outputs.has_regressions }}" == "true" ]; then
               MSG+="  Regressions: ${{ needs.cpp-compare.outputs.regression_count }}\n"
+            fi
+            MSG+="\n"
+          fi
+
+          # NUnit results
+          if [ "${{ needs.detect-frameworks.outputs.has_nunit }}" == "true" ]; then
+            MSG+="**NUnit (.NET):**\n"
+            MSG+="  Source: ${{ needs.nunit-source.outputs.passed }}/${{ needs.nunit-source.outputs.total }}\n"
+            MSG+="  Target: ${{ needs.nunit-target.outputs.passed }}/${{ needs.nunit-target.outputs.total }}\n"
+            if [ "${{ needs.nunit-compare.outputs.has_regressions }}" == "true" ]; then
+              MSG+="  Regressions: ${{ needs.nunit-compare.outputs.regression_count }}\n"
+            fi
+            MSG+="\n"
+          fi
+
+          # xUnit results
+          if [ "${{ needs.detect-frameworks.outputs.has_xunit }}" == "true" ]; then
+            MSG+="**xUnit (.NET):**\n"
+            MSG+="  Source: ${{ needs.xunit-source.outputs.passed }}/${{ needs.xunit-source.outputs.total }}\n"
+            MSG+="  Target: ${{ needs.xunit-target.outputs.passed }}/${{ needs.xunit-target.outputs.total }}\n"
+            if [ "${{ needs.xunit-compare.outputs.has_regressions }}" == "true" ]; then
+              MSG+="  Regressions: ${{ needs.xunit-compare.outputs.regression_count }}\n"
+            fi
+            MSG+="\n"
+          fi
+
+          # Python unittest results
+          if [ "${{ needs.detect-frameworks.outputs.has_unittest }}" == "true" ]; then
+            MSG+="**Python unittest:**\n"
+            MSG+="  Source: ${{ needs.unittest-source.outputs.passed }}/${{ needs.unittest-source.outputs.total }}\n"
+            MSG+="  Target: ${{ needs.unittest-target.outputs.passed }}/${{ needs.unittest-target.outputs.total }}\n"
+            if [ "${{ needs.unittest-compare.outputs.has_regressions }}" == "true" ]; then
+              MSG+="  Regressions: ${{ needs.unittest-compare.outputs.regression_count }}\n"
+            fi
+            MSG+="\n"
+          fi
+
+          # Storybook results
+          if [ "${{ needs.detect-frameworks.outputs.has_storybook }}" == "true" ]; then
+            MSG+="**Storybook:**\n"
+            MSG+="  Source: ${{ needs.storybook-source.outputs.passed }}/${{ needs.storybook-source.outputs.total }}\n"
+            MSG+="  Target: ${{ needs.storybook-target.outputs.passed }}/${{ needs.storybook-target.outputs.total }}\n"
+            if [ "${{ needs.storybook-compare.outputs.has_regressions }}" == "true" ]; then
+              MSG+="  Regressions: ${{ needs.storybook-compare.outputs.regression_count }}\n"
             fi
             MSG+="\n"
           fi

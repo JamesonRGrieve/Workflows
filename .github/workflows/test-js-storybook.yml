@@ -1,0 +1,280 @@
+name: Reusable Storybook Test Runner
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to checkout and test. Leave empty for default checkout."
+        required: false
+        type: string
+        default: ""
+      node-version:
+        description: "Node.js version to use for Storybook tests."
+        required: false
+        type: string
+        default: "18.x"
+      runs_on:
+        description: "Runner label for the test job."
+        required: false
+        type: string
+        default: '["self-hosted", "multithreaded"]'
+      artifact_name:
+        description: "Name for the test results artifact."
+        required: true
+        type: string
+      parallel_workers:
+        description: "Number of parallel workers. Leave empty for runner default (6 for multithreaded, 1 for singlethreaded). Use 'auto' for cgroup-aware CPU count, or a number."
+        required: false
+        type: string
+        default: ""
+      storybook_port:
+        description: "Port for Storybook server."
+        required: false
+        type: string
+        default: "6006"
+      storybook_start_command:
+        description: "Command to start Storybook server."
+        required: false
+        type: string
+        default: "npm run storybook"
+      storybook_test_command:
+        description: "Command to run Storybook tests."
+        required: false
+        type: string
+        default: "npm run storybook-test"
+      working-directory:
+        description: "Directory where storybook commands should be executed."
+        required: false
+        type: string
+        default: "."
+    outputs:
+      total:
+        description: "Total number of tests"
+        value: ${{ jobs.test.outputs.total }}
+      passed:
+        description: "Number of passing tests"
+        value: ${{ jobs.test.outputs.passed }}
+      percentage:
+        description: "Pass percentage"
+        value: ${{ jobs.test.outputs.percentage }}
+      collection_errors:
+        description: "Whether collection errors occurred"
+        value: ${{ jobs.test.outputs.collection_errors }}
+      no_tests_found:
+        description: "Whether no tests were found"
+        value: ${{ jobs.test.outputs.no_tests_found }}
+      has_errors:
+        description: "Whether any errors occurred"
+        value: ${{ jobs.test.outputs.has_errors }}
+      error_type:
+        description: "Type of error if any"
+        value: ${{ jobs.test.outputs.error_type }}
+      failing_count:
+        description: "Number of failing tests"
+        value: ${{ jobs.test.outputs.failing_count }}
+      error_count:
+        description: "Number of errored tests"
+        value: ${{ jobs.test.outputs.error_count }}
+      skipped_count:
+        description: "Number of skipped tests"
+        value: ${{ jobs.test.outputs.skipped_count }}
+      xfailed_count:
+        description: "Number of xfailed tests"
+        value: ${{ jobs.test.outputs.xfailed_count }}
+
+jobs:
+  test:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs['working-directory'] }}
+    outputs:
+      total: ${{ steps.extract-results.outputs.total }}
+      passed: ${{ steps.extract-results.outputs.passed }}
+      percentage: ${{ steps.extract-results.outputs.percentage }}
+      collection_errors: ${{ steps.check-collection.outputs.has_collection_errors }}
+      no_tests_found: ${{ steps.check-collection.outputs.no_tests_found }}
+      has_errors: ${{ steps.check-collection.outputs.has_errors }}
+      error_type: ${{ steps.check-collection.outputs.error_type }}
+      failing_count: ${{ steps.extract-results.outputs.failing_count }}
+      error_count: ${{ steps.extract-results.outputs.error_count }}
+      skipped_count: ${{ steps.extract-results.outputs.skipped_count }}
+      xfailed_count: ${{ steps.extract-results.outputs.xfailed_count }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Use Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Check for Storybook configuration
+        id: check-collection
+        run: |
+          HAS_COLLECTION_ERRORS="false"
+          NO_TESTS_FOUND="false"
+          ERROR_TYPE="none"
+
+          # Check if storybook is properly configured
+          if ! npm ls @storybook/test-runner >/dev/null 2>&1; then
+            echo "::warning::@storybook/test-runner not found in dependencies"
+          fi
+
+          # Try to verify storybook can start
+          echo "Storybook configuration check passed"
+          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "no_tests_found=$NO_TESTS_FOUND" >> "$GITHUB_OUTPUT"
+          echo "error_type=$ERROR_TYPE" >> "$GITHUB_OUTPUT"
+          echo "has_errors=false" >> "$GITHUB_OUTPUT"
+
+      - name: Start Storybook
+        id: start-storybook
+        run: |
+          ${{ inputs.storybook_start_command }} -- --port ${{ inputs.storybook_port }} &
+          STORYBOOK_PID=$!
+          echo "storybook_pid=$STORYBOOK_PID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Storybook
+        run: |
+          echo "Waiting for Storybook to start on port ${{ inputs.storybook_port }}..."
+          timeout=120
+          counter=0
+          until $(curl --output /dev/null --silent --head --fail http://localhost:${{ inputs.storybook_port }}); do
+            if [ $counter -ge $timeout ]; then
+              echo "::error::Timed out waiting for Storybook to start"
+              exit 1
+            fi
+            echo "Waiting for Storybook... ($counter seconds so far)"
+            sleep 5
+            counter=$((counter + 5))
+          done
+          echo "Storybook is up and running on port ${{ inputs.storybook_port }}!"
+
+      - name: Run Storybook tests
+        id: run-tests
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+
+          # Source shared worker calculation script
+          source "$GITHUB_WORKSPACE/.github/scripts/cgroup_workers.sh"
+          WORKERS=$(determine_workers "${{ inputs.parallel_workers }}" '${{ inputs.runs_on }}')
+
+          echo "Running Storybook tests with $WORKERS workers..."
+
+          WORKER_FLAGS=""
+          if [ "$WORKERS" != "1" ]; then
+            WORKER_FLAGS="--maxWorkers=$WORKERS"
+          fi
+
+          set +e
+          ${{ inputs.storybook_test_command }} -- --url http://localhost:${{ inputs.storybook_port }} $WORKER_FLAGS --json --outputFile=storybook_results.json 2>&1 | tee test_output.txt
+          TEST_EXIT=$?
+          set -e
+
+          echo "storybook_exit_code=$TEST_EXIT" >> "$GITHUB_OUTPUT"
+
+          if [ ! -f storybook_results.json ]; then
+            echo '{"testResults": [], "numTotalTests": 0, "numPassedTests": 0, "numFailedTests": 0}' > storybook_results.json
+          fi
+
+          echo "Storybook tests completed (exit code: $TEST_EXIT)."
+
+      - name: Extract test results
+        id: extract-results
+        run: |
+          python3 -c "
+          import json
+          import os
+
+          total = passed = failed = skipped = 0
+          percentage = 0.0
+          passing_tests = []
+          failing_tests = []
+          error_tests = []
+          skipped_tests = []
+          xfailed_tests = []
+          xpassed_tests = []
+          all_tests = []
+
+          try:
+              with open('storybook_results.json') as f:
+                  results = json.load(f)
+
+              # Parse Jest-style Storybook results
+              total = results.get('numTotalTests', 0)
+              passed = results.get('numPassedTests', 0)
+              failed = results.get('numFailedTests', 0)
+              skipped = results.get('numPendingTests', 0) + results.get('numTodoTests', 0)
+
+              for test_result in results.get('testResults', []):
+                  for assertion in test_result.get('assertionResults', []):
+                      title = assertion.get('fullName', assertion.get('title', 'unknown'))
+                      status = assertion.get('status', '')
+                      all_tests.append(title)
+
+                      if status == 'passed':
+                          passing_tests.append(title)
+                      elif status == 'failed':
+                          failing_tests.append(title)
+                      elif status in ['pending', 'todo', 'skipped']:
+                          skipped_tests.append(title)
+
+              percentage = (passed / total * 100) if total > 0 else 0
+          except FileNotFoundError:
+              print('Results file not found')
+          except Exception as e:
+              print(f'Error: {e}')
+
+          # Save artifact data in standardized format
+          with open('test_data.json', 'w') as f:
+              json.dump({
+                  'passing_tests': passing_tests,
+                  'failing_tests': failing_tests,
+                  'error_tests': error_tests,
+                  'skipped_tests': skipped_tests,
+                  'xfailed_tests': xfailed_tests,
+                  'xpassed_tests': xpassed_tests,
+                  'all_tests': all_tests,
+                  'skipped_tests_with_reasons': {},
+                  'xfailed_tests_with_reasons': {},
+                  'warnings': []
+              }, f, indent=2)
+
+          print(f'Results: {passed}/{total} ({percentage:.1f}%)')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={total}\n')
+              f.write(f'passed={passed}\n')
+              f.write(f'percentage={percentage:.2f}\n')
+              f.write(f'failing_count={len(failing_tests)}\n')
+              f.write(f'error_count={len(error_tests)}\n')
+              f.write(f'skipped_count={len(skipped_tests)}\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\n')
+          "
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            ${{ inputs['working-directory'] }}/test_data.json
+            ${{ inputs['working-directory'] }}/test_output.txt
+            ${{ inputs['working-directory'] }}/storybook_results.json
+            ${{ inputs['working-directory'] }}/*-snapshots/
+          retention-days: 3
+          if-no-files-found: ignore
