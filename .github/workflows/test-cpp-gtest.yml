@@ -1,0 +1,566 @@
+name: Reusable C++ Unit Test Runner (GTest/CTest)
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to checkout and test. Leave empty for default checkout."
+        required: false
+        type: string
+        default: ""
+      cmake-version:
+        description: "CMake version to use."
+        required: false
+        type: string
+        default: "3.28"
+      compiler:
+        description: "Compiler to use (gcc, clang). Auto-detects if empty."
+        required: false
+        type: string
+        default: ""
+      build-type:
+        description: "CMake build type (Debug, Release, RelWithDebInfo, MinSizeRel)."
+        required: false
+        type: string
+        default: "Release"
+      build-dir:
+        description: "Build directory relative to repo root."
+        required: false
+        type: string
+        default: "build"
+      cmake-args:
+        description: "Additional CMake configuration arguments."
+        required: false
+        type: string
+        default: ""
+      test-args:
+        description: "Additional CTest arguments."
+        required: false
+        type: string
+        default: ""
+      runs_on:
+        description: "Runner label for the test job."
+        required: false
+        type: string
+        default: '["self-hosted", "multithreaded"]'
+      artifact_name:
+        description: "Name for the test results artifact."
+        required: true
+        type: string
+      parallel_workers:
+        description: "Number of parallel workers for CTest. Leave empty for runner default (6 for multithreaded, 1 for singlethreaded). Use 'auto' for cgroup-aware CPU count, or a number."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      total:
+        description: "Total number of tests"
+        value: ${{ jobs.test.outputs.total }}
+      passed:
+        description: "Number of passing tests"
+        value: ${{ jobs.test.outputs.passed }}
+      percentage:
+        description: "Pass percentage"
+        value: ${{ jobs.test.outputs.percentage }}
+      collection_errors:
+        description: "Whether collection errors occurred"
+        value: ${{ jobs.test.outputs.collection_errors }}
+      no_tests_found:
+        description: "Whether no tests were found"
+        value: ${{ jobs.test.outputs.no_tests_found }}
+      has_errors:
+        description: "Whether any errors occurred"
+        value: ${{ jobs.test.outputs.has_errors }}
+      error_type:
+        description: "Type of error if any"
+        value: ${{ jobs.test.outputs.error_type }}
+      failing_count:
+        description: "Number of failing tests"
+        value: ${{ jobs.test.outputs.failing_count }}
+      error_count:
+        description: "Number of errored tests"
+        value: ${{ jobs.test.outputs.error_count }}
+      skipped_count:
+        description: "Number of skipped tests"
+        value: ${{ jobs.test.outputs.skipped_count }}
+      xfailed_count:
+        description: "Number of disabled/xfailed tests"
+        value: ${{ jobs.test.outputs.xfailed_count }}
+
+jobs:
+  test:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    outputs:
+      total: ${{ steps.extract-results.outputs.total }}
+      passed: ${{ steps.extract-results.outputs.passed }}
+      percentage: ${{ steps.extract-results.outputs.percentage }}
+      collection_errors: ${{ steps.check-build.outputs.has_build_errors }}
+      no_tests_found: ${{ steps.check-collection.outputs.no_tests_found }}
+      has_errors: ${{ steps.check-collection.outputs.has_errors }}
+      error_type: ${{ steps.check-collection.outputs.error_type }}
+      failing_count: ${{ steps.extract-results.outputs.failing_count }}
+      error_count: ${{ steps.extract-results.outputs.error_count }}
+      skipped_count: ${{ steps.extract-results.outputs.skipped_count }}
+      xfailed_count: ${{ steps.extract-results.outputs.xfailed_count }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up CMake
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "${{ inputs.cmake-version }}"
+
+      - name: Set up compiler
+        id: setup-compiler
+        run: |
+          COMPILER="${{ inputs.compiler }}"
+
+          if [ -z "$COMPILER" ]; then
+            # Auto-detect: prefer clang if available, fall back to gcc
+            if command -v clang++ &> /dev/null; then
+              COMPILER="clang"
+            else
+              COMPILER="gcc"
+            fi
+          fi
+
+          if [ "$COMPILER" = "clang" ]; then
+            echo "CC=clang" >> $GITHUB_ENV
+            echo "CXX=clang++" >> $GITHUB_ENV
+            echo "Using Clang compiler"
+          else
+            echo "CC=gcc" >> $GITHUB_ENV
+            echo "CXX=g++" >> $GITHUB_ENV
+            echo "Using GCC compiler"
+          fi
+
+          echo "compiler=$COMPILER" >> $GITHUB_OUTPUT
+
+      - name: Configure CMake
+        id: cmake-configure
+        run: |
+          set +e
+          cmake -B ${{ inputs.build-dir }} \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build-type }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            ${{ inputs.cmake-args }} \
+            > cmake_configure_output.txt 2>&1
+          CMAKE_EXIT=$?
+          set -e
+
+          cat cmake_configure_output.txt
+
+          if [ $CMAKE_EXIT -ne 0 ]; then
+            echo "::error::CMake configuration failed"
+            echo "cmake_failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "cmake_failed=false" >> $GITHUB_OUTPUT
+            echo "CMake configuration successful"
+          fi
+
+      - name: Build
+        id: check-build
+        if: steps.cmake-configure.outputs.cmake_failed != 'true'
+        run: |
+          set +e
+          cmake --build ${{ inputs.build-dir }} --parallel > build_output.txt 2>&1
+          BUILD_EXIT=$?
+          set -e
+
+          cat build_output.txt
+
+          HAS_BUILD_ERRORS="false"
+          ERROR_TYPE="none"
+
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "::error::Build failed"
+            HAS_BUILD_ERRORS="true"
+
+            if grep -q "error:" build_output.txt; then
+              if grep -q "undefined reference\|ld returned" build_output.txt; then
+                ERROR_TYPE="LinkError"
+              else
+                ERROR_TYPE="CompileError"
+              fi
+            else
+              ERROR_TYPE="BuildError"
+            fi
+          fi
+
+          echo "has_build_errors=$HAS_BUILD_ERRORS" >> $GITHUB_OUTPUT
+          echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
+
+      - name: Check for test discovery
+        id: check-collection
+        if: steps.check-build.outputs.has_build_errors != 'true' && steps.cmake-configure.outputs.cmake_failed != 'true'
+        run: |
+          echo "Discovering tests with CTest..."
+          cd ${{ inputs.build-dir }}
+
+          set +e
+          ctest -N > ../collection_output.txt 2>&1
+          CTEST_EXIT=$?
+          set -e
+
+          cat ../collection_output.txt
+
+          HAS_COLLECTION_ERRORS="false"
+          NO_TESTS_FOUND="false"
+          ERROR_TYPE="none"
+
+          if [ $CTEST_EXIT -ne 0 ]; then
+            echo "::error::Test discovery failed"
+            HAS_COLLECTION_ERRORS="true"
+            ERROR_TYPE="DiscoveryError"
+          else
+            # Parse test count from ctest -N output
+            # Format: "Total Tests: 42" or "0 tests"
+            TEST_COUNT=$(grep -oE "Total Tests: [0-9]+" ../collection_output.txt | grep -oE "[0-9]+" || echo "0")
+            if [ "$TEST_COUNT" = "0" ] || [ -z "$TEST_COUNT" ]; then
+              # Try alternate format
+              TEST_COUNT=$(grep -oE "^[0-9]+ tests?" ../collection_output.txt | grep -oE "^[0-9]+" || echo "0")
+            fi
+
+            if [ "$TEST_COUNT" = "0" ] || [ -z "$TEST_COUNT" ]; then
+              echo "::warning::No tests were found"
+              NO_TESTS_FOUND="true"
+              ERROR_TYPE="NoTestsFound"
+            else
+              echo "Found $TEST_COUNT tests"
+            fi
+          fi
+
+          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> $GITHUB_OUTPUT
+          echo "no_tests_found=$NO_TESTS_FOUND" >> $GITHUB_OUTPUT
+          echo "error_type=$ERROR_TYPE" >> $GITHUB_OUTPUT
+
+          if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
+            echo "has_errors=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_errors=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run tests
+        id: run-tests
+        continue-on-error: true
+        if: |
+          steps.check-build.outputs.has_build_errors != 'true' &&
+          steps.cmake-configure.outputs.cmake_failed != 'true' &&
+          steps.check-collection.outputs.has_collection_errors != 'true' &&
+          steps.check-collection.outputs.no_tests_found != 'true'
+        run: |
+          set -euo pipefail
+
+          cgroup_auto_workers() {
+            local n=""
+
+            # cgroup v2: /sys/fs/cgroup/cpu.max => "<quota> <period>" or "max <period>"
+            if [ -f /sys/fs/cgroup/cpu.max ]; then
+              local quota period
+              quota="$(awk '{print $1}' /sys/fs/cgroup/cpu.max)"
+              period="$(awk '{print $2}' /sys/fs/cgroup/cpu.max)"
+              if [ -n "$quota" ] && [ -n "$period" ] && [ "$quota" != "max" ] && [ "$period" != "0" ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+
+            # cgroup v1: cpu.cfs_quota_us / cpu.cfs_period_us
+            if [ -z "$n" ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
+              local quota period
+              quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"
+              period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+              if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+
+            # cpuset fallback (v2: /sys/fs/cgroup/cpuset.cpus ; v1: /sys/fs/cgroup/cpuset/cpuset.cpus)
+            if [ -z "$n" ]; then
+              local f=""
+              if [ -f /sys/fs/cgroup/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset.cpus"
+              elif [ -f /sys/fs/cgroup/cpuset/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset/cpuset.cpus"
+              fi
+
+              if [ -n "$f" ]; then
+                local spec
+                spec="$(cat "$f" | tr -d '[:space:]')"
+                if [ -n "$spec" ]; then
+                  local count=0
+                  IFS=',' read -r -a parts <<< "$spec"
+                  for p in "${parts[@]}"; do
+                    if [[ "$p" == *-* ]]; then
+                      local a="${p%%-*}"
+                      local b="${p##*-}"
+                      if [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$b" -ge "$a" ]]; then
+                        count=$((count + b - a + 1))
+                      fi
+                    elif [[ "$p" =~ ^[0-9]+$ ]]; then
+                      count=$((count + 1))
+                    fi
+                  done
+                  if [ "$count" -gt 0 ]; then
+                    n="$count"
+                  fi
+                fi
+              fi
+            fi
+
+            if [ -z "$n" ] || [ "$n" -lt 1 ] 2>/dev/null; then
+              n="1"
+            fi
+
+            echo "$n"
+          }
+
+          WORKERS="${{ inputs.parallel_workers }}"
+          if [ -z "$WORKERS" ]; then
+            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
+              WORKERS="6"
+            else
+              WORKERS="1"
+            fi
+          elif [ "$WORKERS" = "auto" ]; then
+            WORKERS="$(cgroup_auto_workers)"
+          fi
+
+          echo "Running tests with $WORKERS parallel jobs..."
+
+          cd ${{ inputs.build-dir }}
+
+          # Run CTest with JUnit XML output for structured results
+          set +e
+          ctest --output-on-failure \
+            --parallel $WORKERS \
+            --output-junit ../test_results.xml \
+            ${{ inputs.test-args }} \
+            2>&1 | tee ../test_output.txt
+          CTEST_EXIT=$?
+          set -e
+
+          echo "ctest_exit_code=$CTEST_EXIT" >> $GITHUB_OUTPUT
+
+          if [ $CTEST_EXIT -eq 0 ]; then
+            echo "All tests passed"
+          else
+            echo "::warning::Some tests failed (exit code: $CTEST_EXIT)"
+          fi
+
+          # Also try to collect GTest XML if available
+          find . -name "*.xml" -path "*test*" -exec cp {} ../gtest_results/ \; 2>/dev/null || true
+
+      - name: Extract test results
+        id: extract-results
+        run: |
+          python3 -c "
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          total = passed = 0
+          percentage = 0.0
+          passing_tests = []
+          failing_tests = []
+          error_tests = []
+          skipped_tests = []
+          xfailed_tests = []  # For DISABLED_ tests in GTest
+          xpassed_tests = []
+          all_tests = []
+          skipped_with_reasons = {}
+          xfailed_with_reasons = {}
+          warnings_list = []
+
+          def parse_junit_xml(xml_path):
+              \"\"\"Parse JUnit/CTest XML output format.\"\"\"
+              results = {
+                  'total': 0, 'passed': 0,
+                  'passing': [], 'failing': [], 'error': [],
+                  'skipped': [], 'disabled': [], 'all': []
+              }
+
+              try:
+                  tree = ET.parse(xml_path)
+                  root = tree.getroot()
+
+                  # Handle both <testsuites> and <testsuite> as root
+                  testsuites = root.findall('.//testsuite')
+                  if not testsuites and root.tag == 'testsuite':
+                      testsuites = [root]
+
+                  for testsuite in testsuites:
+                      suite_name = testsuite.get('name', 'unknown')
+
+                      for testcase in testsuite.findall('testcase'):
+                          test_name = testcase.get('name', 'unknown')
+                          classname = testcase.get('classname', suite_name)
+                          full_name = f'{classname}::{test_name}'
+
+                          results['all'].append(full_name)
+                          results['total'] += 1
+
+                          # Check for DISABLED_ prefix (GTest convention)
+                          if test_name.startswith('DISABLED_') or classname.startswith('DISABLED_'):
+                              results['disabled'].append(full_name)
+                              continue
+
+                          # Check for failure/error/skipped
+                          failure = testcase.find('failure')
+                          error = testcase.find('error')
+                          skipped = testcase.find('skipped')
+
+                          if failure is not None:
+                              results['failing'].append(full_name)
+                          elif error is not None:
+                              results['error'].append(full_name)
+                          elif skipped is not None:
+                              results['skipped'].append(full_name)
+                          else:
+                              results['passed'] += 1
+                              results['passing'].append(full_name)
+
+              except Exception as e:
+                  print(f'Error parsing XML: {e}')
+
+              return results
+
+          def parse_ctest_output(output_path):
+              \"\"\"Parse CTest text output as fallback.\"\"\"
+              results = {
+                  'total': 0, 'passed': 0,
+                  'passing': [], 'failing': [], 'error': [],
+                  'skipped': [], 'disabled': [], 'all': []
+              }
+
+              try:
+                  with open(output_path, 'r') as f:
+                      content = f.read()
+
+                  # Parse lines like:
+                  # 1/10 Test #1: test_name ...................   Passed    0.01 sec
+                  # 2/10 Test #2: another_test ................***Failed    0.02 sec
+                  import re
+                  test_pattern = r'^\s*\d+/\d+\s+Test\s+#\d+:\s+(\S+)\s+\.+\s*(\*\*\*)?(\w+)'
+
+                  for line in content.split('\n'):
+                      match = re.match(test_pattern, line)
+                      if match:
+                          test_name = match.group(1)
+                          status = match.group(3)
+                          results['all'].append(test_name)
+                          results['total'] += 1
+
+                          if status == 'Passed':
+                              results['passing'].append(test_name)
+                              results['passed'] += 1
+                          elif status == 'Failed':
+                              results['failing'].append(test_name)
+                          elif status == 'Skipped' or status == 'NotRun':
+                              results['skipped'].append(test_name)
+                          else:
+                              results['error'].append(test_name)
+
+                  # Also check summary line
+                  summary_match = re.search(r'(\d+)% tests passed, (\d+) tests failed out of (\d+)', content)
+                  if summary_match and results['total'] == 0:
+                      pct = int(summary_match.group(1))
+                      failed = int(summary_match.group(2))
+                      total = int(summary_match.group(3))
+                      results['total'] = total
+                      results['passed'] = total - failed
+
+              except Exception as e:
+                  print(f'Error parsing CTest output: {e}')
+
+              return results
+
+          # Try XML first, fall back to text parsing
+          xml_path = Path('test_results.xml')
+          text_path = Path('test_output.txt')
+
+          if xml_path.exists():
+              print('Parsing JUnit XML results...')
+              results = parse_junit_xml(xml_path)
+          elif text_path.exists():
+              print('Parsing CTest text output...')
+              results = parse_ctest_output(text_path)
+          else:
+              print('No test results found')
+              results = {
+                  'total': 0, 'passed': 0,
+                  'passing': [], 'failing': [], 'error': [],
+                  'skipped': [], 'disabled': [], 'all': []
+              }
+
+          total = results['total']
+          passed = results['passed']
+          passing_tests = results['passing']
+          failing_tests = results['failing']
+          error_tests = results['error']
+          skipped_tests = results['skipped']
+          xfailed_tests = results['disabled']  # DISABLED_ tests map to xfailed
+          all_tests = results['all']
+
+          percentage = (passed / total * 100) if total > 0 else 0
+
+          # Extract warnings from build/test output
+          for output_file in ['build_output.txt', 'test_output.txt']:
+              try:
+                  with open(output_file, 'r') as f:
+                      content = f.read()
+                  for line in content.split('\n'):
+                      if 'warning:' in line.lower() and 'error:' not in line.lower():
+                          warnings_list.append(line.strip())
+              except:
+                  pass
+
+          # Save artifact data (compatible with regression-test.yml)
+          with open('test_data.json', 'w') as f:
+              json.dump({
+                  'passing_tests': passing_tests,
+                  'failing_tests': failing_tests,
+                  'error_tests': error_tests,
+                  'skipped_tests': skipped_tests,
+                  'xfailed_tests': xfailed_tests,
+                  'xpassed_tests': xpassed_tests,
+                  'all_tests': all_tests,
+                  'skipped_tests_with_reasons': skipped_with_reasons,
+                  'xfailed_tests_with_reasons': xfailed_with_reasons,
+                  'warnings': warnings_list[:100]  # Limit warnings
+              }, f, indent=2)
+
+          print(f'Results: {passed}/{total} ({percentage:.1f}%)')
+          print(f'Passing: {len(passing_tests)}, Failing: {len(failing_tests)}, Errors: {len(error_tests)}')
+          print(f'Skipped: {len(skipped_tests)}, Disabled: {len(xfailed_tests)}')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={total}\n')
+              f.write(f'passed={passed}\n')
+              f.write(f'percentage={percentage:.2f}\n')
+              f.write(f'failing_count={len(failing_tests)}\n')
+              f.write(f'error_count={len(error_tests)}\n')
+              f.write(f'skipped_count={len(skipped_tests)}\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\n')
+              f.write(f'xpassed_count={len(xpassed_tests)}\n')
+          "
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            test_data.json
+            test_output.txt
+            test_results.xml
+            build_output.txt
+            cmake_configure_output.txt
+            collection_output.txt
+          retention-days: 3
+          if-no-files-found: ignore

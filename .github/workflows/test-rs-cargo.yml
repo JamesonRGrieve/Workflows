@@ -1,0 +1,504 @@
+name: Reusable Cargo Test Runner
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to checkout and test. Leave empty for default checkout."
+        required: false
+        type: string
+        default: ""
+      rust-version:
+        description: "Rust toolchain version to use for testing."
+        required: false
+        type: string
+        default: "stable"
+      runs_on:
+        description: "Runner label for the test job."
+        required: false
+        type: string
+        default: '["self-hosted", "multithreaded"]'
+      artifact_name:
+        description: "Name for the test results artifact."
+        required: true
+        type: string
+      parallel_workers:
+        description: "Number of parallel test threads. Leave empty for runner default (6 for multithreaded, 1 for singlethreaded). Use 'auto' for cgroup-aware CPU count, or a number."
+        required: false
+        type: string
+        default: ""
+      working_directory:
+        description: "Working directory for cargo commands (where Cargo.toml is located)."
+        required: false
+        type: string
+        default: "."
+      cargo_test_args:
+        description: "Additional arguments to pass to cargo test."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      total:
+        description: "Total number of tests"
+        value: ${{ jobs.test.outputs.total }}
+      passed:
+        description: "Number of passing tests"
+        value: ${{ jobs.test.outputs.passed }}
+      percentage:
+        description: "Pass percentage"
+        value: ${{ jobs.test.outputs.percentage }}
+      collection_errors:
+        description: "Whether compilation/collection errors occurred"
+        value: ${{ jobs.test.outputs.collection_errors }}
+      no_tests_found:
+        description: "Whether no tests were found"
+        value: ${{ jobs.test.outputs.no_tests_found }}
+      has_errors:
+        description: "Whether any errors occurred"
+        value: ${{ jobs.test.outputs.has_errors }}
+      error_type:
+        description: "Type of error if any"
+        value: ${{ jobs.test.outputs.error_type }}
+      failing_count:
+        description: "Number of failing tests"
+        value: ${{ jobs.test.outputs.failing_count }}
+      error_count:
+        description: "Number of errored tests"
+        value: ${{ jobs.test.outputs.error_count }}
+      skipped_count:
+        description: "Number of ignored tests"
+        value: ${{ jobs.test.outputs.skipped_count }}
+      xfailed_count:
+        description: "Number of should_panic tests (analogous to xfail)"
+        value: ${{ jobs.test.outputs.xfailed_count }}
+
+jobs:
+  test:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    outputs:
+      total: ${{ steps.extract-results.outputs.total }}
+      passed: ${{ steps.extract-results.outputs.passed }}
+      percentage: ${{ steps.extract-results.outputs.percentage }}
+      collection_errors: ${{ steps.check-compilation.outputs.has_collection_errors }}
+      no_tests_found: ${{ steps.check-compilation.outputs.no_tests_found }}
+      has_errors: ${{ steps.check-compilation.outputs.has_errors }}
+      error_type: ${{ steps.check-compilation.outputs.error_type }}
+      failing_count: ${{ steps.extract-results.outputs.failing_count }}
+      error_count: ${{ steps.extract-results.outputs.error_count }}
+      skipped_count: ${{ steps.extract-results.outputs.skipped_count }}
+      xfailed_count: ${{ steps.extract-results.outputs.xfailed_count }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: "recursive"
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ inputs.working_directory }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Check for compilation errors
+        id: check-compilation
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          echo "Running cargo check to detect compilation errors..."
+
+          HAS_COLLECTION_ERRORS="false"
+          NO_TESTS_FOUND="false"
+          ERROR_TYPE="none"
+
+          # Try to compile the test binaries
+          if ! cargo test --no-run 2>&1 | tee compilation_output.txt; then
+            echo "::error::Compilation errors detected"
+            HAS_COLLECTION_ERRORS="true"
+
+            if grep -q "error\[E" compilation_output.txt; then
+              # Extract the first error code
+              ERROR_CODE=$(grep -o "error\[E[0-9]*\]" compilation_output.txt | head -1 || echo "CompilationError")
+              ERROR_TYPE="$ERROR_CODE"
+            else
+              ERROR_TYPE="CompilationError"
+            fi
+          else
+            # Count tests by doing a dry run
+            TEST_COUNT=$(cargo test --no-run 2>&1 | grep -c "Compiling\|Running" || echo "0")
+
+            # Better detection: actually list tests
+            cargo test -- --list 2>&1 | tee test_list.txt || true
+            TEST_COUNT=$(grep -c ": test$" test_list.txt || echo "0")
+
+            if [[ "$TEST_COUNT" == "0" ]]; then
+              echo "::warning::No tests were found"
+              NO_TESTS_FOUND="true"
+              ERROR_TYPE="NoTestsFound"
+            else
+              echo "Found $TEST_COUNT tests"
+            fi
+          fi
+
+          echo "has_collection_errors=$HAS_COLLECTION_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "no_tests_found=$NO_TESTS_FOUND" >> "$GITHUB_OUTPUT"
+          echo "error_type=$ERROR_TYPE" >> "$GITHUB_OUTPUT"
+          if [[ "$HAS_COLLECTION_ERRORS" == "true" || "$NO_TESTS_FOUND" == "true" ]]; then
+            echo "has_errors=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_errors=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests
+        id: run-tests
+        continue-on-error: true
+        if: steps.check-compilation.outputs.has_collection_errors != 'true'
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+
+          cgroup_auto_workers() {
+            local n=""
+
+            # cgroup v2: /sys/fs/cgroup/cpu.max => "<quota> <period>" or "max <period>"
+            if [ -f /sys/fs/cgroup/cpu.max ]; then
+              local quota period
+              quota="$(awk '{print $1}' /sys/fs/cgroup/cpu.max)"
+              period="$(awk '{print $2}' /sys/fs/cgroup/cpu.max)"
+              if [ -n "$quota" ] && [ -n "$period" ] && [ "$quota" != "max" ] && [ "$period" != "0" ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+
+            # cgroup v1: cpu.cfs_quota_us / cpu.cfs_period_us
+            if [ -z "$n" ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
+              local quota period
+              quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"
+              period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+              if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+
+            # cpuset fallback (v2: /sys/fs/cgroup/cpuset.cpus ; v1: /sys/fs/cgroup/cpuset/cpuset.cpus)
+            if [ -z "$n" ]; then
+              local f=""
+              if [ -f /sys/fs/cgroup/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset.cpus"
+              elif [ -f /sys/fs/cgroup/cpuset/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset/cpuset.cpus"
+              fi
+
+              if [ -n "$f" ]; then
+                local spec
+                spec="$(cat "$f" | tr -d '[:space:]')"
+                if [ -n "$spec" ]; then
+                  local count=0
+                  IFS=',' read -r -a parts <<< "$spec"
+                  for p in "${parts[@]}"; do
+                    if [[ "$p" == *-* ]]; then
+                      local a="${p%%-*}"
+                      local b="${p##*-}"
+                      if [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$b" -ge "$a" ]]; then
+                        count=$((count + b - a + 1))
+                      fi
+                    elif [[ "$p" =~ ^[0-9]+$ ]]; then
+                      count=$((count + 1))
+                    fi
+                  done
+                  if [ "$count" -gt 0 ]; then
+                    n="$count"
+                  fi
+                fi
+              fi
+            fi
+
+            if [ -z "$n" ] || [ "$n" -lt 1 ] 2>/dev/null; then
+              n="1"
+            fi
+
+            echo "$n"
+          }
+
+          WORKERS="${{ inputs.parallel_workers }}"
+          if [ -z "$WORKERS" ]; then
+            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
+              WORKERS="6"
+            else
+              WORKERS="1"
+            fi
+          elif [ "$WORKERS" = "auto" ]; then
+            WORKERS="$(cgroup_auto_workers)"
+          fi
+
+          echo "Running tests with $WORKERS threads..."
+
+          # Set test threads for cargo
+          export RUST_TEST_THREADS=$WORKERS
+
+          # Run cargo test with JSON output (unstable feature via nightly or cargo-nextest)
+          set +e
+          cargo test ${{ inputs.cargo_test_args }} -- --format json -Z unstable-options 2>&1 | tee test_output_raw.json
+          CARGO_EXIT=$?
+          set -e
+
+          # If JSON output failed (stable toolchain), fall back to parsing standard output
+          if ! grep -q '"type":' test_output_raw.json 2>/dev/null; then
+            echo "JSON output not available, falling back to text parsing..."
+            set +e
+            cargo test ${{ inputs.cargo_test_args }} 2>&1 | tee test_output.txt
+            CARGO_EXIT=$?
+            set -e
+
+            # Create a simple results format from text output
+            echo "{\"format\": \"text\", \"exit_code\": $CARGO_EXIT}" > test_output_raw.json
+          else
+            # Save raw JSON and copy to text output
+            cp test_output_raw.json test_output.txt
+          fi
+
+          echo "cargo_exit_code=$CARGO_EXIT" >> "$GITHUB_OUTPUT"
+
+          if [ "$CARGO_EXIT" -eq 137 ]; then
+            echo "::warning::Tests were killed (exit 137) - likely OOM. Partial results may be available."
+          fi
+
+          echo "Test execution completed (exit code: $CARGO_EXIT)"
+
+      - name: Extract test results
+        id: extract-results
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          python3 -c "
+          import json
+          import os
+          import re
+
+          total = passed = 0
+          percentage = 0.0
+          passing_tests = []
+          failing_tests = []
+          error_tests = []
+          skipped_tests = []  # Rust 'ignored' tests
+          xfailed_tests = []  # should_panic tests that passed
+          xpassed_tests = []
+          all_tests = []
+          skipped_with_reasons = {}
+          xfailed_with_reasons = {}
+          warnings_list = []
+
+          def parse_json_output():
+              global total, passed, passing_tests, failing_tests, error_tests, skipped_tests, all_tests
+
+              try:
+                  with open('test_output_raw.json', 'r') as f:
+                      content = f.read()
+
+                  # cargo test JSON output is newline-delimited JSON
+                  for line in content.strip().split('\n'):
+                      if not line.strip():
+                          continue
+                      try:
+                          event = json.loads(line)
+
+                          if event.get('type') == 'test':
+                              name = event.get('name', '')
+                              if not name:
+                                  continue
+
+                              if event.get('event') == 'started':
+                                  all_tests.append(name)
+                              elif event.get('event') == 'ok':
+                                  passing_tests.append(name)
+                                  passed += 1
+                                  total += 1
+                              elif event.get('event') == 'failed':
+                                  failing_tests.append(name)
+                                  total += 1
+                              elif event.get('event') == 'ignored':
+                                  skipped_tests.append(name)
+                                  reason = event.get('reason', 'No reason')
+                                  skipped_with_reasons[name] = reason
+                                  total += 1
+
+                          elif event.get('type') == 'suite':
+                              if event.get('event') == 'started':
+                                  # Reset for new suite if needed
+                                  pass
+                      except json.JSONDecodeError:
+                          continue
+
+                  return True
+              except FileNotFoundError:
+                  return False
+              except Exception as e:
+                  print(f'JSON parsing error: {e}')
+                  return False
+
+          def parse_text_output():
+              global total, passed, passing_tests, failing_tests, error_tests, skipped_tests, all_tests, skipped_with_reasons
+
+              try:
+                  with open('test_output.txt', 'r') as f:
+                      content = f.read()
+
+                  # Parse text output from cargo test
+                  # Example: 'test tests::test_name ... ok'
+                  # Example: 'test tests::test_name ... FAILED'
+                  # Example: 'test tests::test_name ... ignored'
+
+                  test_pattern = re.compile(r'^test\s+(\S+)\s+\.\.\.\s+(\w+)', re.MULTILINE)
+
+                  for match in test_pattern.finditer(content):
+                      name = match.group(1)
+                      result = match.group(2).lower()
+
+                      all_tests.append(name)
+                      total += 1
+
+                      if result == 'ok':
+                          passing_tests.append(name)
+                          passed += 1
+                      elif result == 'failed':
+                          failing_tests.append(name)
+                      elif result == 'ignored':
+                          skipped_tests.append(name)
+                          skipped_with_reasons[name] = 'Test marked with #[ignore]'
+
+                  # Also parse summary line: 'test result: ok. 5 passed; 0 failed; 1 ignored'
+                  summary_pattern = re.compile(r'test result:.*?(\d+)\s+passed;\s*(\d+)\s+failed;\s*(\d+)\s+ignored')
+                  summary_match = summary_pattern.search(content)
+
+                  if summary_match and total == 0:
+                      passed = int(summary_match.group(1))
+                      failed = int(summary_match.group(2))
+                      ignored = int(summary_match.group(3))
+                      total = passed + failed + ignored
+
+                  return True
+              except FileNotFoundError:
+                  return False
+              except Exception as e:
+                  print(f'Text parsing error: {e}')
+                  return False
+
+          # Try JSON first, fall back to text
+          if not parse_json_output():
+              parse_text_output()
+
+          # Calculate percentage
+          percentage = (passed / total * 100) if total > 0 else 0
+
+          # Extract warnings from compilation output
+          try:
+              with open('compilation_output.txt', 'r') as f:
+                  content = f.read()
+
+              warning_pattern = re.compile(r'^warning:.*$', re.MULTILINE)
+              for match in warning_pattern.finditer(content):
+                  warnings_list.append(match.group(0))
+          except:
+              pass
+
+          # Save artifact data in same format as pytest
+          with open('test_data.json', 'w') as f:
+              json.dump({
+                  'passing_tests': passing_tests,
+                  'failing_tests': failing_tests,
+                  'error_tests': error_tests,
+                  'skipped_tests': skipped_tests,
+                  'xfailed_tests': xfailed_tests,
+                  'xpassed_tests': xpassed_tests,
+                  'all_tests': all_tests,
+                  'skipped_tests_with_reasons': skipped_with_reasons,
+                  'xfailed_tests_with_reasons': xfailed_with_reasons,
+                  'warnings': warnings_list
+              }, f, indent=2)
+
+          print(f'Results: {passed}/{total} ({percentage:.1f}%)')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'total={total}\n')
+              f.write(f'passed={passed}\n')
+              f.write(f'percentage={percentage:.2f}\n')
+              f.write(f'failing_count={len(failing_tests)}\n')
+              f.write(f'error_count={len(error_tests)}\n')
+              f.write(f'skipped_count={len(skipped_tests)}\n')
+              f.write(f'xfailed_count={len(xfailed_tests)}\n')
+              f.write(f'xpassed_count={len(xpassed_tests)}\n')
+          "
+
+      - name: Create results.json for compatibility
+        if: always()
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          # Create a results.json file similar to pytest-json-report for compatibility
+          python3 -c "
+          import json
+          import os
+
+          try:
+              with open('test_data.json', 'r') as f:
+                  data = json.load(f)
+
+              # Convert to pytest-like format
+              tests = []
+              for name in data.get('passing_tests', []):
+                  tests.append({'nodeid': name, 'outcome': 'passed'})
+              for name in data.get('failing_tests', []):
+                  tests.append({'nodeid': name, 'outcome': 'failed'})
+              for name in data.get('error_tests', []):
+                  tests.append({'nodeid': name, 'outcome': 'error'})
+              for name in data.get('skipped_tests', []):
+                  reason = data.get('skipped_tests_with_reasons', {}).get(name, 'No reason')
+                  tests.append({'nodeid': name, 'outcome': 'skipped', 'longrepr': reason})
+              for name in data.get('xfailed_tests', []):
+                  reason = data.get('xfailed_tests_with_reasons', {}).get(name, 'No reason')
+                  tests.append({'nodeid': name, 'outcome': 'xfailed', 'longrepr': reason})
+              for name in data.get('xpassed_tests', []):
+                  tests.append({'nodeid': name, 'outcome': 'xpassed'})
+
+              total = len(data.get('all_tests', []))
+              passed = len(data.get('passing_tests', []))
+
+              results = {
+                  'exitcode': 0 if len(data.get('failing_tests', [])) == 0 else 1,
+                  'summary': {
+                      'total': total,
+                      'passed': passed
+                  },
+                  'tests': tests
+              }
+
+              with open('results.json', 'w') as f:
+                  json.dump(results, f, indent=2)
+
+          except Exception as e:
+              print(f'Error creating results.json: {e}')
+              # Create minimal results file
+              with open('results.json', 'w') as f:
+                  json.dump({'exitcode': 1, 'summary': {'total': 0, 'passed': 0}, 'tests': []}, f)
+          "
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            ${{ inputs.working_directory }}/test_data.json
+            ${{ inputs.working_directory }}/test_output.txt
+            ${{ inputs.working_directory }}/results.json
+            ${{ inputs.working_directory }}/compilation_output.txt
+          retention-days: 3
+          if-no-files-found: ignore
