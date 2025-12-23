@@ -7,16 +7,50 @@ on:
         description: "Target branch to compare against (e.g., main)."
         required: true
         type: string
+      # Python/pytest options
       python-version:
         description: "Python version for pytest."
         required: false
         type: string
         default: "3.10"
+      # Rust/cargo options
       rust-version:
         description: "Rust toolchain version for cargo test."
         required: false
         type: string
         default: "stable"
+      # C++/CMake options
+      cmake-version:
+        description: "CMake version for C++ tests."
+        required: false
+        type: string
+        default: "3.28"
+      cpp-compiler:
+        description: "C++ compiler (gcc, clang). Auto-detects if empty."
+        required: false
+        type: string
+        default: ""
+      cpp-build-type:
+        description: "CMake build type (Debug, Release, RelWithDebInfo, MinSizeRel)."
+        required: false
+        type: string
+        default: "Release"
+      cpp-build-dir:
+        description: "Build directory for C++ projects."
+        required: false
+        type: string
+        default: "build"
+      cpp-cmake-args:
+        description: "Additional CMake configuration arguments."
+        required: false
+        type: string
+        default: ""
+      cpp-test-args:
+        description: "Additional CTest arguments."
+        required: false
+        type: string
+        default: ""
+      # Common options
       runs_on:
         description: "Runner label."
         required: false
@@ -27,6 +61,11 @@ on:
         required: false
         type: string
         default: ""
+      use_target_cache:
+        description: "Whether to use caching for target branch test results. When false, always runs fresh tests."
+        required: false
+        type: boolean
+        default: false
     secrets:
       DISCORD_WEBHOOK_URL:
         required: false
@@ -45,6 +84,12 @@ on:
       regression_count_cargo:
         description: "Number of regressions (cargo)"
         value: ${{ jobs.compare-cargo.outputs.regression_count }}
+      cpp_has_regressions:
+        description: "Whether regressions were detected (C++)"
+        value: ${{ jobs.compare-cpp.outputs.has_regressions }}
+      cpp_regression_count:
+        description: "Number of regressions (C++)"
+        value: ${{ jobs.compare-cpp.outputs.regression_count }}
 
 jobs:
   # Detect which test frameworks are present
@@ -53,6 +98,7 @@ jobs:
     outputs:
       has_pytest: ${{ steps.detect.outputs.has_pytest }}
       has_cargo: ${{ steps.detect.outputs.has_cargo }}
+      has_cpp: ${{ steps.detect.outputs.has_cpp }}
     steps:
       - uses: actions/checkout@v4.2.2
       - name: Detect test frameworks
@@ -73,6 +119,25 @@ jobs:
           else
             echo "has_cargo=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # Detect C++ with CMake and tests
+          HAS_CPP="false"
+          if [ -f "CMakeLists.txt" ]; then
+            # Check for test-related CMake content
+            if grep -rqE "(enable_testing|add_test|gtest|catch|boost.*test)" CMakeLists.txt 2>/dev/null || \
+               find . -name "CMakeLists.txt" -exec grep -lE "(enable_testing|add_test|gtest|catch)" {} \; 2>/dev/null | head -1 | grep -q .; then
+              HAS_CPP="true"
+              echo "✅ Detected: C++ (CMake with tests)"
+            fi
+          fi
+          # Check for test source files
+          if [ "$HAS_CPP" = "false" ]; then
+            if find . \( -name "*_test.cpp" -o -name "*_test.cc" -o -name "test_*.cpp" -o -name "test_*.cc" \) 2>/dev/null | head -1 | grep -q .; then
+              HAS_CPP="true"
+              echo "✅ Detected: C++ test files"
+            fi
+          fi
+          echo "has_cpp=$HAS_CPP" >> "$GITHUB_OUTPUT"
 
   # Test source branch (always fresh, no caching)
   test-source:
@@ -111,6 +176,7 @@ jobs:
       # Define cache keys
       - name: Set cache keys
         id: cache-keys
+        if: inputs.use_target_cache
         run: |
           # Version bump forces cache invalidation when extraction logic changes
           CACHE_VERSION="v4"
@@ -122,6 +188,7 @@ jobs:
       # Try to restore complete results first
       - name: Check for complete cache
         id: cache-complete
+        if: inputs.use_target_cache
         uses: actions/cache/restore@v4
         with:
           path: cached_target
@@ -130,7 +197,7 @@ jobs:
       # If no complete cache, check for any pending cache (someone else is running)
       - name: Check for pending cache
         id: cache-pending
-        if: steps.cache-complete.outputs.cache-hit != 'true'
+        if: inputs.use_target_cache && steps.cache-complete.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
         with:
           path: cached_pending
@@ -141,7 +208,10 @@ jobs:
       - name: Determine initial status
         id: initial-status
         run: |
-          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+          if [ "${{ inputs.use_target_cache }}" != "true" ]; then
+            echo "status=disabled" >> $GITHUB_OUTPUT
+            echo "🔄 Cache disabled - will run fresh tests"
+          elif [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
             echo "status=complete" >> $GITHUB_OUTPUT
             echo "✅ Found complete cache - will use it"
           elif [ "${{ steps.cache-pending.outputs.cache-hit }}" == "true" ]; then
@@ -154,7 +224,7 @@ jobs:
 
       # If cache miss, immediately save a pending marker so others know to wait
       - name: Create pending marker
-        if: steps.initial-status.outputs.status == 'miss'
+        if: inputs.use_target_cache && steps.initial-status.outputs.status == 'miss'
         run: |
           mkdir -p cached_pending_marker
           echo "pending" > cached_pending_marker/status
@@ -162,7 +232,7 @@ jobs:
           echo "run_id=${{ github.run_id }}" >> cached_pending_marker/status
 
       - name: Save pending marker
-        if: steps.initial-status.outputs.status == 'miss'
+        if: inputs.use_target_cache && steps.initial-status.outputs.status == 'miss'
         uses: actions/cache/save@v4
         with:
           path: cached_pending_marker
@@ -171,7 +241,7 @@ jobs:
       # If pending found, poll for complete cache with exponential backoff
       - name: Poll for complete cache
         id: poll-cache
-        if: steps.initial-status.outputs.status == 'pending'
+        if: inputs.use_target_cache && steps.initial-status.outputs.status == 'pending'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -209,7 +279,7 @@ jobs:
       # Restore complete cache after polling found it
       - name: Restore cache after poll
         id: cache-after-poll
-        if: steps.poll-cache.outputs.found == 'true'
+        if: inputs.use_target_cache && steps.poll-cache.outputs.found == 'true'
         uses: actions/cache/restore@v4
         with:
           path: cached_target
@@ -218,7 +288,10 @@ jobs:
       - name: Determine final status
         id: final-status
         run: |
-          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+          if [ "${{ inputs.use_target_cache }}" != "true" ]; then
+            echo "cache_hit=false" >> $GITHUB_OUTPUT
+            echo "🔄 Cache disabled - running fresh tests"
+          elif [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
             echo "cache_hit=true" >> $GITHUB_OUTPUT
             echo "✅ Using complete cache (found immediately)"
           elif [ "${{ steps.cache-after-poll.outputs.cache-hit }}" == "true" ]; then
@@ -231,7 +304,7 @@ jobs:
 
       - name: Load cached results
         id: load-cache
-        if: steps.final-status.outputs.cache_hit == 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit == 'true'
         run: |
           echo "✅ Loading cached target results (skipping test run)"
           if [ -f cached_target/outputs.env ]; then
@@ -239,7 +312,7 @@ jobs:
           fi
 
       - name: Upload cached artifact
-        if: steps.final-status.outputs.cache_hit == 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pytest_target_${{ github.event.pull_request.number || github.run_id }}
@@ -480,7 +553,7 @@ jobs:
           "
 
       - name: Save results to cache
-        if: steps.final-status.outputs.cache_hit != 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit != 'true'
         run: |
           echo "💾 Saving results to cache..."
           mkdir -p cached_target
@@ -515,7 +588,7 @@ jobs:
 
       # Save complete results so other PRs can find it
       - name: Upload to cache
-        if: steps.final-status.outputs.cache_hit != 'true'
+        if: inputs.use_target_cache && steps.final-status.outputs.cache_hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: cached_target
@@ -644,6 +717,69 @@ jobs:
       current_no_tests_found: ${{ needs.test-source-cargo.outputs.no_tests_found }}
       artifact_name: regression_cargo_${{ github.event.pull_request.number || github.run_id }}
 
+  # ============================================
+  # C++ Tests (GTest/CTest)
+  # ============================================
+
+  # Test C++ source branch
+  test-source-cpp:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp == 'true'
+    uses: ./.github/workflows/test-cpp-gtest.yml
+    with:
+      ref: ""  # Default checkout = PR branch
+      cmake-version: ${{ inputs.cmake-version }}
+      compiler: ${{ inputs.cpp-compiler }}
+      build-type: ${{ inputs.cpp-build-type }}
+      build-dir: ${{ inputs.cpp-build-dir }}
+      cmake-args: ${{ inputs.cpp-cmake-args }}
+      test-args: ${{ inputs.cpp-test-args }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Test C++ target branch
+  test-target-cpp:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cpp == 'true'
+    uses: ./.github/workflows/test-cpp-gtest.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      cmake-version: ${{ inputs.cmake-version }}
+      compiler: ${{ inputs.cpp-compiler }}
+      build-type: ${{ inputs.cpp-build-type }}
+      build-dir: ${{ inputs.cpp-build-dir }}
+      cmake-args: ${{ inputs.cpp-cmake-args }}
+      test-args: ${{ inputs.cpp-test-args }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Compare C++ results
+  compare-cpp:
+    needs: [test-source-cpp, test-target-cpp]
+    if: always() && needs.test-source-cpp.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: cpp_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: cpp_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.test-target-cpp.outputs.passed }}
+      baseline_total: ${{ needs.test-target-cpp.outputs.total }}
+      baseline_percentage: ${{ needs.test-target-cpp.outputs.percentage }}
+      current_passed: ${{ needs.test-source-cpp.outputs.passed }}
+      current_total: ${{ needs.test-source-cpp.outputs.total }}
+      current_percentage: ${{ needs.test-source-cpp.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.test-target-cpp.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.test-target-cpp.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.test-source-cpp.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.test-source-cpp.outputs.no_tests_found }}
+      artifact_name: regression_cpp_${{ github.event.pull_request.number || github.run_id }}
+
   # ============== NOTIFICATIONS ==============
 
   # Notify on pytest regressions
@@ -700,6 +836,36 @@ jobs:
           MSG+="Source: ${{ needs.test-source-cargo.outputs.passed }}/${{ needs.test-source-cargo.outputs.total }}\n"
           MSG+="Target: ${{ needs.test-target-cargo.outputs.passed }}/${{ needs.test-target-cargo.outputs.total }}\n"
           MSG+="Regressions: ${{ needs.compare-cargo.outputs.regression_count || '?' }}\n\n"
+          MSG+="[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"content\": \"$(echo -e "$MSG")\"}" \
+            "$WEBHOOK" || true
+
+  # Notify on C++ regressions
+  notify-cpp:
+    needs: [detect-frameworks, test-source-cpp, test-target-cpp, compare-cpp]
+    if: |
+      always() &&
+      needs.detect-frameworks.outputs.has_cpp == 'true' &&
+      (needs.compare-cpp.outputs.has_regressions == 'true' || needs.compare-cpp.result == 'failure')
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    steps:
+      - name: Send notification
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "No Discord webhook configured, skipping notification"
+            exit 0
+          fi
+
+          MSG="**C++ Test Regression Alert**\n"
+          MSG+="PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}\n"
+          MSG+="\`${{ github.head_ref }}\` → \`${{ inputs.target_branch }}\`\n\n"
+          MSG+="Source: ${{ needs.test-source-cpp.outputs.passed }}/${{ needs.test-source-cpp.outputs.total }}\n"
+          MSG+="Target: ${{ needs.test-target-cpp.outputs.passed }}/${{ needs.test-target-cpp.outputs.total }}\n"
+          MSG+="Regressions: ${{ needs.compare-cpp.outputs.regression_count || '?' }}\n\n"
           MSG+="[View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
           curl -s -H "Content-Type: application/json" \
