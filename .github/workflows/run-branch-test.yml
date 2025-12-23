@@ -123,10 +123,59 @@ on:
       cpp_regression_count:
         description: "Number of regressions (C++)"
         value: ${{ jobs.cpp-compare.outputs.regression_count }}
+      skipped:
+        description: "Whether tests were skipped (docs-only changes)"
+        value: ${{ jobs.aggregate-results.outputs.skipped }}
 
 jobs:
+  # Check if only documentation files changed (skip tests if so)
+  check-changes:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    outputs:
+      only_docs: ${{ steps.check.outputs.only_docs }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Fetch target branch
+        run: |
+          git fetch origin ${{ inputs.target_branch }} --depth=1
+      - name: Check if only docs changed
+        id: check
+        run: |
+          # Get list of changed files between target branch and HEAD
+          CHANGED_FILES=$(git diff --name-only origin/${{ inputs.target_branch }}...HEAD)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No files changed"
+            echo "only_docs=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Check if all changed files are markdown
+          ONLY_DOCS="true"
+          while IFS= read -r file; do
+            if [[ ! "$file" =~ \.md$ ]]; then
+              ONLY_DOCS="false"
+              echo "Non-docs file found: $file"
+              break
+            fi
+          done <<< "$CHANGED_FILES"
+
+          echo "only_docs=$ONLY_DOCS" >> "$GITHUB_OUTPUT"
+          if [ "$ONLY_DOCS" = "true" ]; then
+            echo "✅ Only documentation files changed - tests will be skipped"
+          else
+            echo "📝 Code changes detected - tests will run"
+          fi
+
   # Detect which test frameworks are present
   detect-frameworks:
+    needs: check-changes
+    if: needs.check-changes.outputs.only_docs != 'true'
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       has_pytest: ${{ steps.detect.outputs.has_pytest }}
@@ -490,16 +539,27 @@ jobs:
 
   # ==================== AGGREGATE RESULTS ====================
   aggregate-results:
-    needs: [detect-frameworks, pytest-compare, jest-compare, mocha-compare, cargo-compare, cpp-compare]
+    needs: [check-changes, detect-frameworks, pytest-compare, jest-compare, mocha-compare, cargo-compare, cpp-compare]
     if: always()
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       has_regressions: ${{ steps.aggregate.outputs.has_regressions }}
       regression_count: ${{ steps.aggregate.outputs.regression_count }}
+      skipped: ${{ steps.aggregate.outputs.skipped }}
     steps:
       - name: Aggregate regression results
         id: aggregate
         run: |
+          # Check if tests were skipped due to docs-only changes
+          if [ "${{ needs.check-changes.outputs.only_docs }}" == "true" ]; then
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "has_regressions=false" >> "$GITHUB_OUTPUT"
+            echo "regression_count=0" >> "$GITHUB_OUTPUT"
+            echo "✅ Tests skipped - only documentation files changed"
+            exit 0
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
           TOTAL_REGRESSIONS=0
           HAS_REGRESSIONS="false"
 
@@ -559,8 +619,8 @@ jobs:
 
   # ==================== NOTIFICATIONS ====================
   notify:
-    needs: [detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, cargo-source, cargo-target, cargo-compare, cpp-source, cpp-target, cpp-compare, aggregate-results]
-    if: always() && needs.aggregate-results.outputs.has_regressions == 'true'
+    needs: [check-changes, detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, cargo-source, cargo-target, cargo-compare, cpp-source, cpp-target, cpp-compare, aggregate-results]
+    if: always() && needs.aggregate-results.outputs.has_regressions == 'true' && needs.check-changes.outputs.only_docs != 'true'
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
       - name: Send notification
