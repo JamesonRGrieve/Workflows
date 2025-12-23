@@ -19,6 +19,12 @@ on:
         required: false
         type: string
         default: "18"
+      # Rust/cargo options
+      rust-version:
+        description: "Rust toolchain version for cargo test."
+        required: false
+        type: string
+        default: "stable"
       # C++/CMake options
       cmake-version:
         description: "CMake version for C++ tests."
@@ -105,6 +111,12 @@ on:
       regression_count:
         description: "Total number of regressions (all frameworks)"
         value: ${{ jobs.aggregate-results.outputs.regression_count }}
+      has_regressions_cargo:
+        description: "Whether regressions were detected (cargo)"
+        value: ${{ jobs.cargo-compare.outputs.has_regressions }}
+      regression_count_cargo:
+        description: "Number of regressions (cargo)"
+        value: ${{ jobs.cargo-compare.outputs.regression_count }}
       cpp_has_regressions:
         description: "Whether regressions were detected (C++)"
         value: ${{ jobs.cpp-compare.outputs.has_regressions }}
@@ -120,6 +132,7 @@ jobs:
       has_pytest: ${{ steps.detect.outputs.has_pytest }}
       has_jest: ${{ steps.detect.outputs.has_jest }}
       has_mocha: ${{ steps.detect.outputs.has_mocha }}
+      has_cargo: ${{ steps.detect.outputs.has_cargo }}
       has_cpp: ${{ steps.detect.outputs.has_cpp }}
     steps:
       - uses: actions/checkout@v4.2.2
@@ -128,10 +141,18 @@ jobs:
         run: |
           # Detect pytest
           if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "requirements.txt" ] || find . -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 | grep -q .; then
-            echo "has_pytest=true" >> $GITHUB_OUTPUT
+            echo "has_pytest=true" >> "$GITHUB_OUTPUT"
             echo "✅ Detected: pytest"
           else
-            echo "has_pytest=false" >> $GITHUB_OUTPUT
+            echo "has_pytest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Detect cargo (Rust)
+          if [ -f "Cargo.toml" ]; then
+            echo "has_cargo=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Detected: cargo (Rust)"
+          else
+            echo "has_cargo=false" >> "$GITHUB_OUTPUT"
           fi
 
           # Detect C++ with CMake and tests
@@ -151,7 +172,7 @@ jobs:
               echo "✅ Detected: C++ test files"
             fi
           fi
-          echo "has_cpp=$HAS_CPP" >> $GITHUB_OUTPUT
+          echo "has_cpp=$HAS_CPP" >> "$GITHUB_OUTPUT"
 
           # Detect Jest
           HAS_JEST="false"
@@ -169,7 +190,7 @@ jobs:
               HAS_JEST="true"
             fi
           fi
-          echo "has_jest=$HAS_JEST" >> $GITHUB_OUTPUT
+          echo "has_jest=$HAS_JEST" >> "$GITHUB_OUTPUT"
           if [ "$HAS_JEST" = "true" ]; then
             echo "✅ Detected: Jest"
           fi
@@ -190,7 +211,7 @@ jobs:
               HAS_MOCHA="true"
             fi
           fi
-          echo "has_mocha=$HAS_MOCHA" >> $GITHUB_OUTPUT
+          echo "has_mocha=$HAS_MOCHA" >> "$GITHUB_OUTPUT"
           if [ "$HAS_MOCHA" = "true" ]; then
             echo "✅ Detected: Mocha"
           fi
@@ -357,6 +378,56 @@ jobs:
       current_no_tests_found: ${{ needs.mocha-source.outputs.no_tests_found }}
       artifact_name: regression_mocha_${{ github.event.pull_request.number || github.run_id }}
 
+  # ==================== RUST/CARGO ====================
+  # Test source branch with cargo
+  cargo-source:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cargo == 'true'
+    uses: ./.github/workflows/test-rs-cargo.yml
+    with:
+      ref: ""  # Default checkout = PR branch
+      rust-version: ${{ inputs.rust-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cargo_source_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Test target branch with cargo
+  cargo-target:
+    needs: detect-frameworks
+    if: needs.detect-frameworks.outputs.has_cargo == 'true'
+    uses: ./.github/workflows/test-rs-cargo.yml
+    with:
+      ref: ${{ inputs.target_branch }}
+      rust-version: ${{ inputs.rust-version }}
+      runs_on: ${{ inputs.runs_on }}
+      artifact_name: cargo_target_${{ github.event.pull_request.number || github.run_id }}
+      parallel_workers: ${{ inputs.parallel_workers }}
+
+  # Compare cargo results
+  cargo-compare:
+    needs: [detect-frameworks, cargo-source, cargo-target]
+    if: always() && needs.detect-frameworks.outputs.has_cargo == 'true' && needs.cargo-source.result == 'success'
+    uses: ./.github/workflows/regression-test.yml
+    with:
+      runs_on: ${{ inputs.runs_on }}
+      baseline_label: ${{ inputs.target_branch }}
+      baseline_results_artifact: cargo_target_${{ github.event.pull_request.number || github.run_id }}
+      baseline_results_filename: test_data.json
+      current_label: ${{ github.head_ref || github.ref_name }}
+      current_results_artifact: cargo_source_${{ github.event.pull_request.number || github.run_id }}
+      current_results_filename: test_data.json
+      baseline_passed: ${{ needs.cargo-target.outputs.passed }}
+      baseline_total: ${{ needs.cargo-target.outputs.total }}
+      baseline_percentage: ${{ needs.cargo-target.outputs.percentage }}
+      current_passed: ${{ needs.cargo-source.outputs.passed }}
+      current_total: ${{ needs.cargo-source.outputs.total }}
+      current_percentage: ${{ needs.cargo-source.outputs.percentage }}
+      baseline_collection_errors: ${{ needs.cargo-target.outputs.collection_errors }}
+      baseline_no_tests_found: ${{ needs.cargo-target.outputs.no_tests_found }}
+      current_collection_errors: ${{ needs.cargo-source.outputs.collection_errors }}
+      current_no_tests_found: ${{ needs.cargo-source.outputs.no_tests_found }}
+      artifact_name: regression_cargo_${{ github.event.pull_request.number || github.run_id }}
+
   # ==================== C++ (GTest/CTest) ====================
   # Test C++ source branch
   cpp-source:
@@ -419,7 +490,7 @@ jobs:
 
   # ==================== AGGREGATE RESULTS ====================
   aggregate-results:
-    needs: [detect-frameworks, pytest-compare, jest-compare, mocha-compare, cpp-compare]
+    needs: [detect-frameworks, pytest-compare, jest-compare, mocha-compare, cargo-compare, cpp-compare]
     if: always()
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
@@ -462,6 +533,16 @@ jobs:
             fi
           fi
 
+          # Check Cargo
+          if [ "${{ needs.detect-frameworks.outputs.has_cargo }}" == "true" ]; then
+            CARGO_REGRESSIONS="${{ needs.cargo-compare.outputs.regression_count || '0' }}"
+            if [ "${{ needs.cargo-compare.outputs.has_regressions }}" == "true" ]; then
+              HAS_REGRESSIONS="true"
+              TOTAL_REGRESSIONS=$((TOTAL_REGRESSIONS + CARGO_REGRESSIONS))
+              echo "Cargo regressions: $CARGO_REGRESSIONS"
+            fi
+          fi
+
           # Check C++
           if [ "${{ needs.detect-frameworks.outputs.has_cpp }}" == "true" ]; then
             CPP_REGRESSIONS="${{ needs.cpp-compare.outputs.regression_count || '0' }}"
@@ -472,13 +553,13 @@ jobs:
             fi
           fi
 
-          echo "has_regressions=$HAS_REGRESSIONS" >> $GITHUB_OUTPUT
-          echo "regression_count=$TOTAL_REGRESSIONS" >> $GITHUB_OUTPUT
+          echo "has_regressions=$HAS_REGRESSIONS" >> "$GITHUB_OUTPUT"
+          echo "regression_count=$TOTAL_REGRESSIONS" >> "$GITHUB_OUTPUT"
           echo "Total regressions across all frameworks: $TOTAL_REGRESSIONS"
 
   # ==================== NOTIFICATIONS ====================
   notify:
-    needs: [detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, cpp-source, cpp-target, cpp-compare, aggregate-results]
+    needs: [detect-frameworks, pytest-source, pytest-target, pytest-compare, jest-source, jest-target, jest-compare, mocha-source, mocha-target, mocha-compare, cargo-source, cargo-target, cargo-compare, cpp-source, cpp-target, cpp-compare, aggregate-results]
     if: always() && needs.aggregate-results.outputs.has_regressions == 'true'
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     steps:
@@ -524,6 +605,17 @@ jobs:
             MSG+="  Target: ${{ needs.mocha-target.outputs.passed }}/${{ needs.mocha-target.outputs.total }}\n"
             if [ "${{ needs.mocha-compare.outputs.has_regressions }}" == "true" ]; then
               MSG+="  Regressions: ${{ needs.mocha-compare.outputs.regression_count }}\n"
+            fi
+            MSG+="\n"
+          fi
+
+          # Cargo results
+          if [ "${{ needs.detect-frameworks.outputs.has_cargo }}" == "true" ]; then
+            MSG+="**Cargo (Rust):**\n"
+            MSG+="  Source: ${{ needs.cargo-source.outputs.passed }}/${{ needs.cargo-source.outputs.total }}\n"
+            MSG+="  Target: ${{ needs.cargo-target.outputs.passed }}/${{ needs.cargo-target.outputs.total }}\n"
+            if [ "${{ needs.cargo-compare.outputs.has_regressions }}" == "true" ]; then
+              MSG+="  Regressions: ${{ needs.cargo-compare.outputs.regression_count }}\n"
             fi
             MSG+="\n"
           fi

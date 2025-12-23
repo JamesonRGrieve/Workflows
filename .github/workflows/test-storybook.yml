@@ -12,23 +12,39 @@ on:
         description: "Port for Storybook server"
         required: false
         type: string
-        default: "3001"
+        default: "6006"
       target_branch_to_compare:
         description: "The target branch to compare against for regressions (e.g., main). If empty, regression check is skipped."
         required: false
         type: string
         default: ""
       runs_on:
+        description: "Runner label for the test jobs."
         required: false
         type: string
         default: '["self-hosted", "multithreaded"]'
+      parallel_workers:
+        description: "Number of parallel workers for Storybook tests. Leave empty for runner default (6 for multithreaded, 1 for singlethreaded). Use 'auto' for cgroup-aware CPU count, or a number."
+        required: false
+        type: string
+        default: ""
+      storybook_start_command:
+        description: "Command to start Storybook server."
+        required: false
+        type: string
+        default: "npm run storybook"
+      storybook_test_command:
+        description: "Command to run Storybook tests."
+        required: false
+        type: string
+        default: "npm run storybook-test"
     outputs:
       pr_has_errors:
         description: "Boolean indicating if the PR branch has Storybook test errors."
         value: ${{ jobs.test-pr-branch-storybook.outputs.has_errors }}
       pr_failing_stories_json:
         description: "JSON list of failing story IDs on the PR branch."
-        value: ${{ jobs.test-pr-branch-storybook.outputs.failing_stories_json }}
+        value: ${{ jobs.test-pr-branch-storybook.outputs.failing_items_json }}
       has_regressions:
         description: "Boolean indicating if Storybook test regressions were found."
         value: ${{ jobs.compare-results.outputs.has_regressions }}
@@ -37,52 +53,187 @@ on:
         value: ${{ jobs.compare-results.outputs.regression_count }}
 
 jobs:
-  lint:
-    uses: ./.github/workflows/test-lint-js.yml # Assumes JS/TS linting for Storybook setup
-    permissions:
-      contents: write
-
   test-target-branch-storybook:
     if: ${{ inputs.target_branch_to_compare != '' }}
     name: Test Target Branch Stories
-    needs: [lint] # Ensure linting passes before running tests
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
-      total: ${{ steps.normalise-target.outputs.total }}
-      passed: ${{ steps.normalise-target.outputs.passed }}
-      percentage: ${{ steps.normalise-target.outputs.percentage }}
-      passing_stories_json: ${{ steps.normalise-target.outputs.passing_items_json }}
-      collection_errors: ${{ steps.normalise-target.outputs.collection_errors }}
-      no_tests_found: ${{ steps.normalise-target.outputs.no_tests_found }}
+      total: ${{ steps.results.outputs.total }}
+      passed: ${{ steps.results.outputs.passed }}
+      percentage: ${{ steps.results.outputs.percentage }}
+      passing_stories_json: ${{ steps.results.outputs.passing_items_json }}
+      collection_errors: ${{ steps.results.outputs.collection_errors }}
+      no_tests_found: ${{ steps.results.outputs.no_tests_found }}
+      has_errors: ${{ steps.results.outputs.has_errors }}
+      error_type: ${{ steps.results.outputs.error_type }}
+      failing_count: ${{ steps.results.outputs.failing_count }}
+      error_count: ${{ steps.results.outputs.error_count }}
+      skipped_count: ${{ steps.results.outputs.skipped_count }}
+      xfailed_count: ${{ steps.results.outputs.xfailed_count }}
+
     steps:
+      # Smart caching for target branch results
+      - name: Set cache keys
+        id: cache-keys
+        run: |
+          CACHE_VERSION="v1"
+          BASE_KEY="storybook-${CACHE_VERSION}-${{ inputs.target_branch_to_compare }}-${{ github.event.pull_request.base.sha || github.sha }}"
+          echo "base_key=$BASE_KEY" >> $GITHUB_OUTPUT
+          echo "pending_key=${BASE_KEY}-pending-${{ github.run_id }}" >> $GITHUB_OUTPUT
+          echo "Cache base key: $BASE_KEY"
+
+      - name: Check for complete cache
+        id: cache-complete
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
+      - name: Check for pending cache
+        id: cache-pending
+        if: steps.cache-complete.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_pending
+          key: ${{ steps.cache-keys.outputs.base_key }}-pending-impossible-match
+          restore-keys: |
+            ${{ steps.cache-keys.outputs.base_key }}-pending-
+
+      - name: Determine initial status
+        id: initial-status
+        run: |
+          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+            echo "status=complete" >> $GITHUB_OUTPUT
+            echo "Found complete cache - will use it"
+          elif [ "${{ steps.cache-pending.outputs.cache-hit }}" == "true" ]; then
+            echo "status=pending" >> $GITHUB_OUTPUT
+            echo "Found pending cache - another job is running, will poll"
+          else
+            echo "status=miss" >> $GITHUB_OUTPUT
+            echo "No cache found - will run tests"
+          fi
+
+      - name: Create pending marker
+        if: steps.initial-status.outputs.status == 'miss'
+        run: |
+          mkdir -p cached_pending_marker
+          echo "pending" > cached_pending_marker/status
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> cached_pending_marker/status
+          echo "run_id=${{ github.run_id }}" >> cached_pending_marker/status
+
+      - name: Save pending marker
+        if: steps.initial-status.outputs.status == 'miss'
+        uses: actions/cache/save@v4
+        with:
+          path: cached_pending_marker
+          key: ${{ steps.cache-keys.outputs.pending_key }}
+
+      - name: Poll for complete cache
+        id: poll-cache
+        if: steps.initial-status.outputs.status == 'pending'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Another job is running tests, polling for results..."
+          TOTAL_WAIT=0
+          MAX_WAIT=1200
+          DELAY=5
+          CACHE_KEY="${{ steps.cache-keys.outputs.base_key }}"
+
+          while [ $TOTAL_WAIT -lt $MAX_WAIT ]; do
+            echo "Waiting ${DELAY}s... (${TOTAL_WAIT}s / ${MAX_WAIT}s elapsed)"
+            sleep $DELAY
+            TOTAL_WAIT=$((TOTAL_WAIT + DELAY))
+
+            CACHE_CHECK=$(gh cache list --key "$CACHE_KEY" --limit 1 2>/dev/null || echo "")
+            if echo "$CACHE_CHECK" | grep -q "$CACHE_KEY"; then
+              echo "Complete cache is now available!"
+              echo "found=true" >> $GITHUB_OUTPUT
+              break
+            fi
+
+            DELAY=$((DELAY * 2))
+            if [ $DELAY -gt 60 ]; then
+              DELAY=60
+            fi
+          done
+
+          if [ $TOTAL_WAIT -ge $MAX_WAIT ]; then
+            echo "Timeout after ${MAX_WAIT}s - will run tests ourselves"
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Restore cache after poll
+        id: cache-after-poll
+        if: steps.poll-cache.outputs.found == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
+      - name: Determine final status
+        id: final-status
+        run: |
+          if [ "${{ steps.cache-complete.outputs.cache-hit }}" == "true" ]; then
+            echo "cache_hit=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.cache-after-poll.outputs.cache-hit }}" == "true" ]; then
+            echo "cache_hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "cache_hit=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Load cached results
+        id: load-cache
+        if: steps.final-status.outputs.cache_hit == 'true'
+        run: |
+          echo "Loading cached target results"
+          if [ -f cached_target/outputs.env ]; then
+            cat cached_target/outputs.env >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload cached artifact
+        if: steps.final-status.outputs.cache_hit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
+          path: cached_target/test_data.json
+          if-no-files-found: ignore
+
+      # === Only run tests if no usable cache ===
       - name: Checkout Target Branch
+        if: steps.final-status.outputs.cache_hit != 'true'
         uses: actions/checkout@v4.2.2
         with:
           ref: ${{ inputs.target_branch_to_compare }}
           submodules: "recursive"
 
       - name: Use Node.js ${{ inputs.node-version }}
+        if: steps.final-status.outputs.cache_hit != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
           cache: "npm"
 
       - name: Install dependencies (Target)
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: npm ci
 
       - name: Install Playwright browsers (Target)
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: npx playwright install --with-deps
 
       - name: Run Storybook (Target)
-        run: npm run storybook -- --port ${{ inputs.storybook_port }} &
+        if: steps.final-status.outputs.cache_hit != 'true'
+        run: ${{ inputs.storybook_start_command }} -- --port ${{ inputs.storybook_port }} &
 
       - name: Wait for Storybook (Target)
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: |
           echo "Waiting for Storybook (Target) to start on port ${{ inputs.storybook_port }}..."
-          timeout=120 # Increased timeout
+          timeout=120
           counter=0
           until $(curl --output /dev/null --silent --head --fail http://localhost:${{ inputs.storybook_port }}); do
-            if [ $counter -ge $timeout ]; then # Use -ge for counter check
+            if [ $counter -ge $timeout ]; then
               echo "Timed out waiting for Storybook (Target) to start"
               exit 1
             fi
@@ -94,26 +245,133 @@ jobs:
 
       - name: Run Storybook tests (Target)
         id: run-tests-target
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: |
-          npm run storybook-test -- --json-report target_storybook_results.json || true
-          echo "Storybook tests on target branch completed."
-          if [ -f target_storybook_results.json ]; then
-            cat target_storybook_results.json
-          else
-            echo "target_storybook_results.json not found."
-            echo "{\"testResults\": [], \"numTotalTests\": 0, \"numPassedTests\": 0}" > target_storybook_results.json # Create empty results
+          set -euo pipefail
+
+          cgroup_auto_workers() {
+            local n=""
+            if [ -f /sys/fs/cgroup/cpu.max ]; then
+              local quota period
+              quota="$(awk '{print $1}' /sys/fs/cgroup/cpu.max)"
+              period="$(awk '{print $2}' /sys/fs/cgroup/cpu.max)"
+              if [ -n "$quota" ] && [ -n "$period" ] && [ "$quota" != "max" ] && [ "$period" != "0" ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+            if [ -z "$n" ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
+              local quota period
+              quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"
+              period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+              if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+            if [ -z "$n" ]; then
+              local f=""
+              if [ -f /sys/fs/cgroup/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset.cpus"
+              elif [ -f /sys/fs/cgroup/cpuset/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset/cpuset.cpus"
+              fi
+              if [ -n "$f" ]; then
+                local spec
+                spec="$(cat "$f" | tr -d '[:space:]')"
+                if [ -n "$spec" ]; then
+                  local count=0
+                  IFS=',' read -r -a parts <<< "$spec"
+                  for p in "${parts[@]}"; do
+                    if [[ "$p" == *-* ]]; then
+                      local a="${p%%-*}"
+                      local b="${p##*-}"
+                      if [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$b" -ge "$a" ]]; then
+                        count=$((count + b - a + 1))
+                      fi
+                    elif [[ "$p" =~ ^[0-9]+$ ]]; then
+                      count=$((count + 1))
+                    fi
+                  done
+                  if [ "$count" -gt 0 ]; then
+                    n="$count"
+                  fi
+                fi
+              fi
+            fi
+            if [ -z "$n" ] || [ "$n" -lt 1 ] 2>/dev/null; then
+              n="1"
+            fi
+            echo "$n"
+          }
+
+          WORKERS="${{ inputs.parallel_workers }}"
+          if [ -z "$WORKERS" ]; then
+            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
+              WORKERS="6"
+            else
+              WORKERS="1"
+            fi
+          elif [ "$WORKERS" = "auto" ]; then
+            WORKERS="$(cgroup_auto_workers)"
+          fi
+
+          echo "Running Storybook tests with $WORKERS workers..."
+
+          WORKER_FLAGS=""
+          if [ "$WORKERS" != "1" ]; then
+            WORKER_FLAGS="--maxWorkers=$WORKERS"
+          fi
+
+          set +e
+          ${{ inputs.storybook_test_command }} -- --url http://localhost:${{ inputs.storybook_port }} $WORKER_FLAGS --json --outputFile=target_storybook_results.json 2>&1 | tee test_output.txt
+          TEST_EXIT=$?
+          set -e
+
+          echo "Storybook tests on target branch completed (exit code: $TEST_EXIT)."
+          if [ ! -f target_storybook_results.json ]; then
+            echo '{"testResults": [], "numTotalTests": 0, "numPassedTests": 0}' > target_storybook_results.json
           fi
 
       - name: Normalise Storybook results (Target)
         id: normalise-target
+        if: steps.final-status.outputs.cache_hit != 'true'
         run: |
-          python "$GITHUB_WORKSPACE/.github/scripts/storybook_results_to_standard_json.py" \
+          python3 "$GITHUB_WORKSPACE/.github/scripts/storybook_results_to_standard_json.py" \
             target_storybook_results.json \
             target_test_data.json \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Save results to cache
+        if: steps.final-status.outputs.cache_hit != 'true'
+        run: |
+          mkdir -p cached_target
+          [ -f target_test_data.json ] && cp target_test_data.json cached_target/test_data.json
+          [ -f target_storybook_results.json ] && cp target_storybook_results.json cached_target/
+          echo "complete" > cached_target/status
+          cat > cached_target/outputs.env << EOF
+          total=${{ steps.normalise-target.outputs.total || '0' }}
+          passed=${{ steps.normalise-target.outputs.passed || '0' }}
+          percentage=${{ steps.normalise-target.outputs.percentage || '0.00' }}
+          collection_errors=${{ steps.normalise-target.outputs.collection_errors || 'false' }}
+          no_tests_found=${{ steps.normalise-target.outputs.no_tests_found || 'false' }}
+          has_errors=${{ steps.normalise-target.outputs.has_failures || 'false' }}
+          error_type=none
+          failing_count=${{ steps.normalise-target.outputs.failed || '0' }}
+          error_count=0
+          skipped_count=${{ steps.normalise-target.outputs.skipped || '0' }}
+          xfailed_count=${{ steps.normalise-target.outputs.xfailed || '0' }}
+          passing_items_json=${{ steps.normalise-target.outputs.passing_items_json || '[]' }}
+          EOF
+          sed -i 's/^[[:space:]]*//' cached_target/outputs.env
+
+      - name: Upload to cache
+        if: steps.final-status.outputs.cache_hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: cached_target
+          key: ${{ steps.cache-keys.outputs.base_key }}
+
       - name: Upload target branch artifacts
-        if: always()
+        if: steps.final-status.outputs.cache_hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: target_branch_data_${{ github.event.pull_request.number || github.run_id }}
@@ -123,18 +381,53 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      - name: Set final outputs
+        id: results
+        run: |
+          if [ "${{ steps.final-status.outputs.cache_hit }}" == "true" ]; then
+            echo "total=${{ steps.load-cache.outputs.total || '0' }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ steps.load-cache.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ steps.load-cache.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ steps.load-cache.outputs.collection_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ steps.load-cache.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+            echo "has_errors=${{ steps.load-cache.outputs.has_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "error_type=${{ steps.load-cache.outputs.error_type || 'none' }}" >> $GITHUB_OUTPUT
+            echo "failing_count=${{ steps.load-cache.outputs.failing_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "error_count=${{ steps.load-cache.outputs.error_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "skipped_count=${{ steps.load-cache.outputs.skipped_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "xfailed_count=${{ steps.load-cache.outputs.xfailed_count || '0' }}" >> $GITHUB_OUTPUT
+            echo "passing_items_json=${{ steps.load-cache.outputs.passing_items_json || '[]' }}" >> $GITHUB_OUTPUT
+          else
+            echo "total=${{ steps.normalise-target.outputs.total || '0' }}" >> $GITHUB_OUTPUT
+            echo "passed=${{ steps.normalise-target.outputs.passed || '0' }}" >> $GITHUB_OUTPUT
+            echo "percentage=${{ steps.normalise-target.outputs.percentage || '0.00' }}" >> $GITHUB_OUTPUT
+            echo "collection_errors=${{ steps.normalise-target.outputs.collection_errors || 'false' }}" >> $GITHUB_OUTPUT
+            echo "no_tests_found=${{ steps.normalise-target.outputs.no_tests_found || 'false' }}" >> $GITHUB_OUTPUT
+            echo "has_errors=${{ steps.normalise-target.outputs.has_failures || 'false' }}" >> $GITHUB_OUTPUT
+            echo "error_type=none" >> $GITHUB_OUTPUT
+            echo "failing_count=${{ steps.normalise-target.outputs.failed || '0' }}" >> $GITHUB_OUTPUT
+            echo "error_count=0" >> $GITHUB_OUTPUT
+            echo "skipped_count=${{ steps.normalise-target.outputs.skipped || '0' }}" >> $GITHUB_OUTPUT
+            echo "xfailed_count=${{ steps.normalise-target.outputs.xfailed || '0' }}" >> $GITHUB_OUTPUT
+            echo "passing_items_json=${{ steps.normalise-target.outputs.passing_items_json || '[]' }}" >> $GITHUB_OUTPUT
+          fi
+
   test-pr-branch-storybook:
     name: Test PR Branch Stories
-    needs: [lint]
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       has_errors: ${{ steps.run-tests-pr.outcome == 'failure' || steps.normalise-pr.outputs.has_failures == 'true' }}
-      failing_stories_json: ${{ steps.normalise-pr.outputs.failing_items_json }}
+      failing_items_json: ${{ steps.normalise-pr.outputs.failing_items_json }}
       total: ${{ steps.normalise-pr.outputs.total }}
       passed: ${{ steps.normalise-pr.outputs.passed }}
       percentage: ${{ steps.normalise-pr.outputs.percentage }}
       collection_errors: ${{ steps.normalise-pr.outputs.collection_errors }}
       no_tests_found: ${{ steps.normalise-pr.outputs.no_tests_found }}
+      failing_count: ${{ steps.normalise-pr.outputs.failed }}
+      error_count: ${{ steps.normalise-pr.outputs.error_count || '0' }}
+      skipped_count: ${{ steps.normalise-pr.outputs.skipped }}
+      xfailed_count: ${{ steps.normalise-pr.outputs.xfailed }}
+
     steps:
       - name: Checkout Repository (PR)
         uses: actions/checkout@v4.2.2
@@ -142,7 +435,7 @@ jobs:
           submodules: "recursive"
 
       - name: Use Node.js ${{ inputs.node-version }}
-        uses: actions/setup-node@v4 # Use v4 consistently
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
           cache: "npm"
@@ -154,15 +447,15 @@ jobs:
         run: npx playwright install --with-deps
 
       - name: Run Storybook (PR)
-        run: npm run storybook -- --port ${{ inputs.storybook_port }} &
+        run: ${{ inputs.storybook_start_command }} -- --port ${{ inputs.storybook_port }} &
 
       - name: Wait for Storybook (PR)
         run: |
           echo "Waiting for Storybook (PR) to start on port ${{ inputs.storybook_port }}..."
-          timeout=120 # Increased timeout
+          timeout=120
           counter=0
           until $(curl --output /dev/null --silent --head --fail http://localhost:${{ inputs.storybook_port }}); do
-            if [ $counter -ge $timeout ]; then # Use -ge
+            if [ $counter -ge $timeout ]; then
               echo "Timed out waiting for Storybook (PR) to start"
               exit 1
             fi
@@ -175,19 +468,94 @@ jobs:
       - name: Run Storybook tests (PR)
         id: run-tests-pr
         run: |
-          npm run storybook-test -- --json-report pr_storybook_results.json || true
-          echo "Storybook tests on PR branch completed."
-          if [ -f pr_storybook_results.json ]; then
-            cat pr_storybook_results.json
-          else
-            echo "pr_storybook_results.json not found."
-            echo "{\"testResults\": [], \"numTotalTests\": 0, \"numPassedTests\": 0, \"numFailedTests\": 0}" > pr_storybook_results.json # Create empty results
+          set -euo pipefail
+
+          cgroup_auto_workers() {
+            local n=""
+            if [ -f /sys/fs/cgroup/cpu.max ]; then
+              local quota period
+              quota="$(awk '{print $1}' /sys/fs/cgroup/cpu.max)"
+              period="$(awk '{print $2}' /sys/fs/cgroup/cpu.max)"
+              if [ -n "$quota" ] && [ -n "$period" ] && [ "$quota" != "max" ] && [ "$period" != "0" ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+            if [ -z "$n" ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -f /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
+              local quota period
+              quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"
+              period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+              if [ "$quota" -gt 0 ] && [ "$period" -gt 0 ]; then
+                n="$(awk -v q="$quota" -v p="$period" 'BEGIN{print int((q+p-1)/p)}')"
+              fi
+            fi
+            if [ -z "$n" ]; then
+              local f=""
+              if [ -f /sys/fs/cgroup/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset.cpus"
+              elif [ -f /sys/fs/cgroup/cpuset/cpuset.cpus ]; then
+                f="/sys/fs/cgroup/cpuset/cpuset.cpus"
+              fi
+              if [ -n "$f" ]; then
+                local spec
+                spec="$(cat "$f" | tr -d '[:space:]')"
+                if [ -n "$spec" ]; then
+                  local count=0
+                  IFS=',' read -r -a parts <<< "$spec"
+                  for p in "${parts[@]}"; do
+                    if [[ "$p" == *-* ]]; then
+                      local a="${p%%-*}"
+                      local b="${p##*-}"
+                      if [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$b" -ge "$a" ]]; then
+                        count=$((count + b - a + 1))
+                      fi
+                    elif [[ "$p" =~ ^[0-9]+$ ]]; then
+                      count=$((count + 1))
+                    fi
+                  done
+                  if [ "$count" -gt 0 ]; then
+                    n="$count"
+                  fi
+                fi
+              fi
+            fi
+            if [ -z "$n" ] || [ "$n" -lt 1 ] 2>/dev/null; then
+              n="1"
+            fi
+            echo "$n"
+          }
+
+          WORKERS="${{ inputs.parallel_workers }}"
+          if [ -z "$WORKERS" ]; then
+            if echo '${{ inputs.runs_on }}' | grep -q "multithreaded"; then
+              WORKERS="6"
+            else
+              WORKERS="1"
+            fi
+          elif [ "$WORKERS" = "auto" ]; then
+            WORKERS="$(cgroup_auto_workers)"
+          fi
+
+          echo "Running Storybook tests with $WORKERS workers..."
+
+          WORKER_FLAGS=""
+          if [ "$WORKERS" != "1" ]; then
+            WORKER_FLAGS="--maxWorkers=$WORKERS"
+          fi
+
+          set +e
+          ${{ inputs.storybook_test_command }} -- --url http://localhost:${{ inputs.storybook_port }} $WORKER_FLAGS --json --outputFile=pr_storybook_results.json 2>&1 | tee test_output.txt
+          TEST_EXIT=$?
+          set -e
+
+          echo "Storybook tests on PR branch completed (exit code: $TEST_EXIT)."
+          if [ ! -f pr_storybook_results.json ]; then
+            echo '{"testResults": [], "numTotalTests": 0, "numPassedTests": 0, "numFailedTests": 0}' > pr_storybook_results.json
           fi
 
       - name: Normalise Storybook results (PR)
         id: normalise-pr
         run: |
-          python "$GITHUB_WORKSPACE/.github/scripts/storybook_results_to_standard_json.py" \
+          python3 "$GITHUB_WORKSPACE/.github/scripts/storybook_results_to_standard_json.py" \
             pr_storybook_results.json \
             pr_test_data.json \
             --github-output "$GITHUB_OUTPUT"
@@ -245,7 +613,7 @@ jobs:
     name: Check Storybook Results & Regressions
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     needs: [test-pr-branch-storybook, compare-results, perform-regression-analysis]
-    if: always() # Always run to give a final status
+    if: always()
     steps:
       - name: Evaluate Storybook Test Results
         run: |
@@ -269,17 +637,14 @@ jobs:
 
             if [[ "$HAS_REGRESSIONS" == "true" ]]; then
               echo "::error::${REGRESSION_COUNT} Storybook test(s) regressed. Stories that were passing on target branch ('${{ inputs.target_branch_to_compare }}') are now failing/broken on the PR branch."
-              # Consider downloading and displaying the regression artifact for details.
-              exit 1 # Fail the workflow due to regressions
+              exit 1
             fi
           fi
 
-          # If no regression analysis, or if regression analysis passed, check PR errors directly
           if [[ "$PR_HAS_ERRORS" == "true" ]]; then
-            echo "::error::Storybook tests failed on the PR branch. Check afor artifacts."
-            # The original test job might have already failed, this ensures it.
+            echo "::error::Storybook tests failed on the PR branch. Check artifacts for details."
             exit 1
           fi
 
-          echo "✅ Storybook tests passed and no new regressions detected (if applicable)."
+          echo "Storybook tests passed and no new regressions detected (if applicable)."
           echo "--- End Storybook Test Results ---"
